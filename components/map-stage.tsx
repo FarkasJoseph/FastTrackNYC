@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { MapPin } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { LoaderCircle, MapPin } from "lucide-react";
 import { places } from "@/lib/fasttrack-data";
+import { RouteSurfaceLegGeometry } from "@/lib/mapbox/types";
+import { MtaTransitLegIntel } from "@/lib/mta/types";
 import { cn } from "@/lib/utils";
 import { PlannerPlan, getPlaceById } from "@/lib/fasttrack-routing";
 
@@ -16,22 +18,124 @@ const modeColors: Record<string, string> = {
 export function MapStage({
   plan,
   activeRoute,
+  transitLegs,
+  transitIntelStatus,
+  surfaceLegGeometries,
+  surfaceGeometryStatus,
   className,
 }: {
   plan: PlannerPlan;
   activeRoute: PlannerPlan["recommendedRoute"];
+  transitLegs?: MtaTransitLegIntel[];
+  transitIntelStatus?: "loading" | "ready" | "error";
+  surfaceLegGeometries?: RouteSurfaceLegGeometry[];
+  surfaceGeometryStatus?: "loading" | "ready" | "error";
   className?: string;
 }) {
   const mapRef = useRef<HTMLDivElement>(null);
+  const latestTransitLegsRef = useRef<MtaTransitLegIntel[]>([]);
+  const latestSurfaceLegGeometriesRef = useRef<RouteSurfaceLegGeometry[]>([]);
   const token = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+  const [renderMode, setRenderMode] = useState<"waiting" | "resolved">("resolved");
+  const [resolvedTransitLegs, setResolvedTransitLegs] = useState<MtaTransitLegIntel[]>([]);
+  const [resolvedSurfaceLegGeometries, setResolvedSurfaceLegGeometries] = useState<
+    RouteSurfaceLegGeometry[]
+  >([]);
   const visiblePlaceIds = Array.from(
     new Set(activeRoute.legs.flatMap((leg) => [leg.fromPlaceId, leg.toPlaceId])),
   );
   const visiblePlaces = places.filter((place) => visiblePlaceIds.includes(place.id));
   const hasLiveMap = Boolean(token);
+  const activeRouteHasTransit = activeRoute.legs.some((leg) => leg.mode === "transit");
+  const activeRouteHasStreetLegs = activeRoute.legs.some(
+    (leg) =>
+      leg.mode === "walk" ||
+      leg.mode === "personal_micromobility" ||
+      leg.mode === "shared_micromobility",
+  );
+  const hasAsyncGeometry = activeRouteHasTransit || activeRouteHasStreetLegs;
+
+  const renderableTransitLegs = useMemo(
+    () =>
+      resolvedTransitLegs.filter(
+        (transitLeg) =>
+          transitLeg.status === "ok" &&
+          Boolean(transitLeg.geometry) &&
+          (transitLeg.geometry?.coordinates.length ?? 0) > 1,
+      ),
+    [resolvedTransitLegs],
+  );
+  const hasRenderableTransitGeometry = renderableTransitLegs.length > 0;
+  const resolvedSurfaceGeometryByLegId = useMemo(
+    () =>
+      new Map(
+        resolvedSurfaceLegGeometries.map((legGeometry) => [legGeometry.legId, legGeometry]),
+      ),
+    [resolvedSurfaceLegGeometries],
+  );
 
   useEffect(() => {
-    if (!token || !mapRef.current) {
+    latestTransitLegsRef.current = transitLegs ?? [];
+  }, [transitLegs]);
+
+  useEffect(() => {
+    latestSurfaceLegGeometriesRef.current = surfaceLegGeometries ?? [];
+  }, [surfaceLegGeometries]);
+
+  useEffect(() => {
+    setResolvedTransitLegs([]);
+    setResolvedSurfaceLegGeometries([]);
+
+    if (!hasAsyncGeometry) {
+      setRenderMode("resolved");
+      return;
+    }
+
+    setRenderMode("waiting");
+    const timeoutId = window.setTimeout(() => {
+      setRenderMode((current) => {
+        if (current !== "waiting") {
+          return current;
+        }
+
+        setResolvedTransitLegs(latestTransitLegsRef.current);
+        setResolvedSurfaceLegGeometries(latestSurfaceLegGeometriesRef.current);
+
+        return "resolved";
+      });
+    }, 2500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeRoute.id, hasAsyncGeometry]);
+
+  useEffect(() => {
+    if (!hasAsyncGeometry || renderMode !== "waiting") {
+      return;
+    }
+
+    const transitSettled = !activeRouteHasTransit || transitIntelStatus !== "loading";
+    const surfaceSettled = !activeRouteHasStreetLegs || surfaceGeometryStatus !== "loading";
+
+    if (transitSettled && surfaceSettled) {
+      setResolvedTransitLegs(transitLegs ?? []);
+      setResolvedSurfaceLegGeometries(surfaceLegGeometries ?? []);
+      setRenderMode("resolved");
+    }
+  }, [
+    activeRouteHasStreetLegs,
+    activeRouteHasTransit,
+    hasAsyncGeometry,
+    renderMode,
+    surfaceGeometryStatus,
+    surfaceLegGeometries,
+    transitIntelStatus,
+    transitLegs,
+  ]);
+
+  useEffect(() => {
+    if (!token || !mapRef.current || renderMode === "waiting") {
       return;
     }
 
@@ -63,6 +167,14 @@ export function MapStage({
         const lineFeatures = activeRoute.legs.map((leg) => {
           const from = getPlaceById(leg.fromPlaceId, places);
           const to = getPlaceById(leg.toPlaceId, places);
+          const liveTransitLeg = renderableTransitLegs.find(
+            (transitLeg) =>
+              transitLeg.legId === leg.id &&
+              transitLeg.status === "ok" &&
+              transitLeg.geometry &&
+              transitLeg.geometry.coordinates.length > 1,
+          );
+          const surfaceLegGeometry = resolvedSurfaceGeometryByLegId.get(leg.id);
 
           return {
             type: "Feature" as const,
@@ -71,13 +183,46 @@ export function MapStage({
             },
             geometry: {
               type: "LineString" as const,
-              coordinates: [
-                [from?.lng ?? -73.98, from?.lat ?? 40.75],
-                [to?.lng ?? -73.98, to?.lat ?? 40.75],
-              ],
+              coordinates:
+                leg.mode === "transit"
+                  ? (liveTransitLeg?.geometry?.coordinates ?? [
+                      [from?.lng ?? -73.98, from?.lat ?? 40.75],
+                      [to?.lng ?? -73.98, to?.lat ?? 40.75],
+                    ])
+                  : (surfaceLegGeometry?.coordinates ?? [
+                      [from?.lng ?? -73.98, from?.lat ?? 40.75],
+                      [to?.lng ?? -73.98, to?.lat ?? 40.75],
+                    ]),
             },
           };
         });
+        const lineGhostFeatures = activeRoute.legs
+          .map((leg) => {
+            const liveTransitLeg = renderableTransitLegs.find(
+              (transitLeg) => transitLeg.legId === leg.id,
+            );
+
+            if (
+              leg.mode !== "transit" ||
+              !liveTransitLeg?.geometry?.fullCoordinates ||
+              liveTransitLeg.geometry.fullCoordinates.length <=
+                liveTransitLeg.geometry.coordinates.length
+            ) {
+              return null;
+            }
+
+            return {
+              type: "Feature" as const,
+              properties: {
+                mode: "transit-ghost",
+              },
+              geometry: {
+                type: "LineString" as const,
+                coordinates: liveTransitLeg.geometry.fullCoordinates,
+              },
+            };
+          })
+          .filter((feature): feature is NonNullable<typeof feature> => Boolean(feature));
 
         const pointFeatures = visiblePlaces.map((place) => ({
           type: "Feature" as const,
@@ -104,6 +249,14 @@ export function MapStage({
           },
         });
 
+        map.addSource("fasttrack-route-ghost", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: lineGhostFeatures,
+          },
+        });
+
         map.addSource("fasttrack-points", {
           type: "geojson",
           data: {
@@ -111,6 +264,23 @@ export function MapStage({
             features: pointFeatures,
           },
         });
+
+        if (lineGhostFeatures.length > 0) {
+          map.addLayer({
+            id: "route-ghost",
+            type: "line",
+            source: "fasttrack-route-ghost",
+            paint: {
+              "line-color": "#9eb3d9",
+              "line-width": 4,
+              "line-opacity": 0.22,
+            },
+            layout: {
+              "line-cap": "round",
+              "line-join": "round",
+            },
+          });
+        }
 
         map.addLayer({
           id: "route-casing",
@@ -183,6 +353,12 @@ export function MapStage({
           bounds.extend([place.lng, place.lat]);
         }
 
+        for (const feature of lineFeatures) {
+          for (const [lng, lat] of feature.geometry.coordinates) {
+            bounds.extend([lng, lat]);
+          }
+        }
+
         map.fitBounds(bounds, {
           padding: 80,
           duration: 0,
@@ -203,13 +379,18 @@ export function MapStage({
     activeRoute.legs,
     plan.scenario.destinationId,
     plan.scenario.originId,
+    renderMode,
+    resolvedSurfaceGeometryByLegId,
+    renderableTransitLegs,
     token,
     visiblePlaces,
   ]);
 
   return (
     <div className={cn("relative h-full w-full overflow-hidden rounded-[2rem]", className)}>
-      {hasLiveMap ? (
+      {renderMode === "waiting" ? (
+        <MapLoadingState />
+      ) : hasLiveMap ? (
         <div ref={mapRef} className="h-full w-full" />
       ) : (
         <StaticRouteMap plan={plan} activeRoute={activeRoute} />
@@ -221,7 +402,26 @@ export function MapStage({
           NYC mixed-mode routing
         </div>
         <div className="route-pill rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--text-muted)]">
-          {hasLiveMap ? "Mapbox basemap" : "Route preview"}
+          {renderMode === "waiting"
+            ? "Loading route"
+            : hasLiveMap
+              ? hasRenderableTransitGeometry || resolvedSurfaceLegGeometries.length > 0
+                ? "Live route map"
+                : "Route preview"
+              : "Route preview"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MapLoadingState() {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-[linear-gradient(180deg,rgba(242,246,251,0.98),rgba(232,238,246,0.98))]">
+      <div className="rounded-[1.6rem] border border-[var(--border-soft)] bg-white/92 px-5 py-4 shadow-sm">
+        <div className="flex items-center gap-3 text-sm text-[var(--text-muted)]">
+          <LoaderCircle className="size-4 animate-spin text-[var(--accent)]" />
+          Loading
         </div>
       </div>
     </div>

@@ -18,6 +18,7 @@ export type PlannerGoal =
   | "balance";
 
 export type MicromobilityMode = "any" | "personal" | "shared" | "avoid";
+export type MtaDirection = "N" | "S";
 
 export interface Place {
   id: string;
@@ -37,6 +38,12 @@ export interface RouteLeg {
   label: string;
   lineName?: string;
   details: string;
+  mta?: {
+    routeIds: string[];
+    originStopId: string;
+    destinationStopId: string;
+    direction: MtaDirection;
+  };
 }
 
 export interface RouteMetrics {
@@ -91,9 +98,14 @@ export const places: Place[] = [
   { id: "grand-central", name: "Grand Central", borough: "Manhattan", lat: 40.7527, lng: -73.9772, label: "Transit hub" },
   { id: "125-express", name: "125 St Express", borough: "Manhattan", lat: 40.8042, lng: -73.9377, label: "Transit hub" },
   { id: "marcy-ave", name: "Marcy Av", borough: "Brooklyn", lat: 40.7083, lng: -73.9579, label: "Transit hub" },
+  { id: "ditmars-blvd", name: "Astoria-Ditmars Blvd", borough: "Queens", lat: 40.775036, lng: -73.912034, label: "Transit hub" },
   { id: "queensboro-plaza", name: "Queensboro Plaza", borough: "Queens", lat: 40.7505, lng: -73.9401, label: "Transit hub" },
   { id: "atlantic-terminal", name: "Atlantic Terminal", borough: "Brooklyn", lat: 40.6845, lng: -73.9776, label: "Transit hub" },
-  { id: "court-square", name: "Court Sq", borough: "Queens", lat: 40.7464, lng: -73.943, label: "Transit hub" },
+  { id: "court-square", name: "Court Sq-23 St", borough: "Queens", lat: 40.747846, lng: -73.946, label: "Transit hub" },
+  { id: "broad-st", name: "Broad St", borough: "Manhattan", lat: 40.706476, lng: -74.011056, label: "Transit hub" },
+  { id: "times-sq-broadway", name: "Times Sq-42 St", borough: "Manhattan", lat: 40.754672, lng: -73.986754, label: "Transit hub" },
+  { id: "wall-st", name: "Wall St", borough: "Manhattan", lat: 40.707557, lng: -74.011862, label: "Transit hub" },
+  { id: "23-r", name: "23 St", borough: "Manhattan", lat: 40.745906, lng: -73.998041, label: "Transit hub" },
 ];
 
 export const scenarios: Scenario[] = [
@@ -113,14 +125,14 @@ export const scenarios: Scenario[] = [
         micromobilityMode: "avoid",
         isTransitOnly: true,
         bestFor: "no riding required",
-        unlock: "Uses the nearest walkable local access",
+        unlock: "Uses the same corridor without reaching the faster express pattern",
         parking: "Not needed",
         availability: "Always available",
         comfort: "High",
-        metrics: { totalMin: 44, walkMin: 14, micromobilityMin: 0, transfers: 1, costUsd: 2.9, confidence: 0.86 },
+        metrics: { totalMin: 44, walkMin: 14, micromobilityMin: 0, transfers: 0, costUsd: 3, confidence: 0.86 },
         legs: [
           { id: "harlem-walk-1", mode: "walk", fromPlaceId: "harlem", toPlaceId: "125-express", durationMin: 10, label: "Walk", details: "Reach the nearest reliable station access on foot." },
-          { id: "harlem-subway-1", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 24, label: "Subway", lineName: "6 + shuttle", details: "Local approach with one transfer before the final Midtown walk." },
+          { id: "harlem-subway-1", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 24, label: "Subway", lineName: "6", details: "Local Lexington service into Grand Central, slower than the express alternative.", mta: { routeIds: ["6"], originStopId: "621S", destinationStopId: "631S", direction: "S" } },
           { id: "harlem-walk-2", mode: "walk", fromPlaceId: "grand-central", toPlaceId: "midtown-east", durationMin: 10, label: "Walk", details: "Last stretch through Midtown East." },
         ],
       },
@@ -134,10 +146,10 @@ export const scenarios: Scenario[] = [
         parking: "High-confidence curbside parking near Grand Central",
         availability: "Bring your own bike or scooter",
         comfort: "Protected and wide avenues for most of the ride",
-        metrics: { totalMin: 29, walkMin: 5, micromobilityMin: 7, transfers: 0, costUsd: 2.9, confidence: 0.92 },
+        metrics: { totalMin: 29, walkMin: 5, micromobilityMin: 7, transfers: 0, costUsd: 3, confidence: 0.92 },
         legs: [
           { id: "harlem-ride-1", mode: "personal_micromobility", fromPlaceId: "harlem", toPlaceId: "125-express", durationMin: 7, label: "Ride", details: "Use your bike or scooter to reach stronger express access fast." },
-          { id: "harlem-subway-2", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 17, label: "Subway", lineName: "4/5", details: "Direct express run into Midtown East." },
+          { id: "harlem-subway-2", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 17, label: "Subway", lineName: "4/5", details: "Direct express run into Midtown East.", mta: { routeIds: ["4", "5"], originStopId: "621S", destinationStopId: "631S", direction: "S" } },
           { id: "harlem-walk-3", mode: "walk", fromPlaceId: "grand-central", toPlaceId: "midtown-east", durationMin: 5, label: "Walk", details: "Short final block walk." },
         ],
       },
@@ -154,7 +166,7 @@ export const scenarios: Scenario[] = [
         metrics: { totalMin: 33, walkMin: 4, micromobilityMin: 8, transfers: 0, costUsd: 7.4, confidence: 0.85 },
         legs: [
           { id: "harlem-ride-2", mode: "shared_micromobility", fromPlaceId: "harlem", toPlaceId: "125-express", durationMin: 8, label: "Ride", details: "Pickup nearby shared micromobility and ride to express access." },
-          { id: "harlem-subway-3", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 20, label: "Subway", lineName: "4/5", details: "Express service into Midtown East." },
+          { id: "harlem-subway-3", mode: "transit", fromPlaceId: "125-express", toPlaceId: "grand-central", durationMin: 20, label: "Subway", lineName: "4/5", details: "Express service into Midtown East.", mta: { routeIds: ["4", "5"], originStopId: "621S", destinationStopId: "631S", direction: "S" } },
           { id: "harlem-walk-4", mode: "walk", fromPlaceId: "grand-central", toPlaceId: "midtown-east", durationMin: 5, label: "Walk", details: "Dock and finish with a short walk." },
         ],
       },
@@ -165,10 +177,10 @@ export const scenarios: Scenario[] = [
     title: "North Williamsburg to Financial District",
     headline: "A short ride to stronger J/Z access removes a slow transfer chain.",
     description:
-      "Instead of committing to a walk-heavy L route and a second train, micromobility gets you to Marcy Av and straight into Lower Manhattan.",
+      "Instead of committing to a longer first-mile walk, micromobility gets you to Marcy Av faster and preserves a direct downtown ride.",
     originId: "williamsburg",
     destinationId: "fidi",
-    heroMetric: "Up to 15 min faster and one fewer transfer",
+    heroMetric: "Up to 15 min faster with less first-mile friction",
     routes: [
       {
         id: "williamsburg-baseline",
@@ -176,15 +188,15 @@ export const scenarios: Scenario[] = [
         micromobilityMode: "avoid",
         isTransitOnly: true,
         bestFor: "lowest complexity",
-        unlock: "Uses the nearest station but forces a transfer chain",
+        unlock: "Uses the same direct downtown line, but with a slower walk to reach it",
         parking: "Not needed",
         availability: "Always available",
         comfort: "High",
-        metrics: { totalMin: 41, walkMin: 13, micromobilityMin: 0, transfers: 1, costUsd: 2.9, confidence: 0.83 },
+        metrics: { totalMin: 41, walkMin: 13, micromobilityMin: 0, transfers: 0, costUsd: 3, confidence: 0.83 },
         legs: [
           { id: "williamsburg-walk-1", mode: "walk", fromPlaceId: "williamsburg", toPlaceId: "marcy-ave", durationMin: 11, label: "Walk", details: "Walk to the nearest dependable station entrance." },
-          { id: "williamsburg-subway-1", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "fidi", durationMin: 24, label: "Subway", lineName: "L + transfer", details: "One transfer and some platform overhead before Lower Manhattan." },
-          { id: "williamsburg-walk-2", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Street-level finish through the Financial District." },
+          { id: "williamsburg-subway-1", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "broad-st", durationMin: 24, label: "Subway", lineName: "J", details: "Direct downtown service, but slower overall because the station access is all on foot.", mta: { routeIds: ["J"], originStopId: "M16S", destinationStopId: "M23S", direction: "S" } },
+          { id: "williamsburg-walk-2", mode: "walk", fromPlaceId: "broad-st", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Street-level finish through the Financial District." },
         ],
       },
       {
@@ -197,11 +209,11 @@ export const scenarios: Scenario[] = [
         parking: "Easy curbside lock-up close to the station",
         availability: "Bring your own bike or scooter",
         comfort: "Fast, direct neighborhood connectors",
-        metrics: { totalMin: 26, walkMin: 5, micromobilityMin: 8, transfers: 0, costUsd: 2.9, confidence: 0.9 },
+        metrics: { totalMin: 26, walkMin: 5, micromobilityMin: 8, transfers: 0, costUsd: 3, confidence: 0.9 },
         legs: [
           { id: "williamsburg-ride-1", mode: "personal_micromobility", fromPlaceId: "williamsburg", toPlaceId: "marcy-ave", durationMin: 8, label: "Ride", details: "Skip the long walk and unlock the stronger station." },
-          { id: "williamsburg-subway-2", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "fidi", durationMin: 13, label: "Subway", lineName: "J/Z", details: "Direct run downtown with no added transfer." },
-          { id: "williamsburg-walk-3", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 5, label: "Walk", details: "Short final walk near the destination." },
+          { id: "williamsburg-subway-2", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "broad-st", durationMin: 13, label: "Subway", lineName: "J/Z", details: "Direct run downtown with no added transfer.", mta: { routeIds: ["J", "Z"], originStopId: "M16S", destinationStopId: "M23S", direction: "S" } },
+          { id: "williamsburg-walk-3", mode: "walk", fromPlaceId: "broad-st", toPlaceId: "fidi", durationMin: 5, label: "Walk", details: "Short final walk near the destination." },
         ],
       },
       {
@@ -217,8 +229,8 @@ export const scenarios: Scenario[] = [
         metrics: { totalMin: 29, walkMin: 6, micromobilityMin: 6, transfers: 0, costUsd: 6.8, confidence: 0.84 },
         legs: [
           { id: "williamsburg-ride-2", mode: "shared_micromobility", fromPlaceId: "williamsburg", toPlaceId: "marcy-ave", durationMin: 6, label: "Ride", details: "Pickup is close, with a short dock transfer near the station." },
-          { id: "williamsburg-subway-3", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "fidi", durationMin: 17, label: "Subway", lineName: "J/Z", details: "Direct downtown service." },
-          { id: "williamsburg-walk-4", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Dock and finish on foot." },
+          { id: "williamsburg-subway-3", mode: "transit", fromPlaceId: "marcy-ave", toPlaceId: "broad-st", durationMin: 17, label: "Subway", lineName: "J/Z", details: "Direct downtown service.", mta: { routeIds: ["J", "Z"], originStopId: "M16S", destinationStopId: "M23S", direction: "S" } },
+          { id: "williamsburg-walk-4", mode: "walk", fromPlaceId: "broad-st", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Dock and finish on foot." },
         ],
       },
     ],
@@ -239,15 +251,15 @@ export const scenarios: Scenario[] = [
         micromobilityMode: "avoid",
         isTransitOnly: true,
         bestFor: "simple transit trip",
-        unlock: "Nearest stop access, but more walking and platform overhead",
+        unlock: "Uses the direct Broadway service from the nearest station with no micromobility required",
         parking: "Not needed",
         availability: "Always available",
         comfort: "High",
-        metrics: { totalMin: 38, walkMin: 11, micromobilityMin: 0, transfers: 1, costUsd: 2.9, confidence: 0.84 },
+        metrics: { totalMin: 42, walkMin: 8, micromobilityMin: 0, transfers: 0, costUsd: 3, confidence: 0.84 },
         legs: [
-          { id: "astoria-walk-1", mode: "walk", fromPlaceId: "astoria", toPlaceId: "queensboro-plaza", durationMin: 9, label: "Walk", details: "Walk to station access before heading into Manhattan." },
-          { id: "astoria-subway-1", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "midtown-west", durationMin: 21, label: "Subway", lineName: "N/W + transfer", details: "One transfer and local arrival into Midtown West." },
-          { id: "astoria-walk-2", mode: "walk", fromPlaceId: "midtown-west", toPlaceId: "midtown-west", durationMin: 8, label: "Walk", details: "Longer final walk through the west side blocks." },
+          { id: "astoria-walk-1", mode: "walk", fromPlaceId: "astoria", toPlaceId: "ditmars-blvd", durationMin: 1, label: "Walk", details: "Short access to the nearest Astoria station." },
+          { id: "astoria-subway-1", mode: "transit", fromPlaceId: "ditmars-blvd", toPlaceId: "times-sq-broadway", durationMin: 33, label: "Subway", lineName: "N / W", details: "Direct Broadway service from Ditmars into Midtown West.", mta: { routeIds: ["N", "W"], originStopId: "R01S", destinationStopId: "R16S", direction: "S" } },
+          { id: "astoria-walk-2", mode: "walk", fromPlaceId: "times-sq-broadway", toPlaceId: "midtown-west", durationMin: 8, label: "Walk", details: "Final blocks on foot into Midtown West." },
         ],
       },
       {
@@ -260,11 +272,11 @@ export const scenarios: Scenario[] = [
         parking: "Reliable parking near the plaza entrances",
         availability: "Bring your own bike or scooter",
         comfort: "Mostly protected north-south lanes",
-        metrics: { totalMin: 27, walkMin: 4, micromobilityMin: 7, transfers: 0, costUsd: 2.9, confidence: 0.88 },
+        metrics: { totalMin: 27, walkMin: 4, micromobilityMin: 7, transfers: 0, costUsd: 3, confidence: 0.88 },
         legs: [
           { id: "astoria-ride-1", mode: "personal_micromobility", fromPlaceId: "astoria", toPlaceId: "queensboro-plaza", durationMin: 7, label: "Ride", details: "Quick ride to the stronger transit node." },
-          { id: "astoria-subway-2", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "midtown-west", durationMin: 16, label: "Subway", lineName: "N/W", details: "Cleaner one-seat ride into Midtown West." },
-          { id: "astoria-walk-3", mode: "walk", fromPlaceId: "midtown-west", toPlaceId: "midtown-west", durationMin: 4, label: "Walk", details: "Short finish on foot." },
+          { id: "astoria-subway-2", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "times-sq-broadway", durationMin: 16, label: "Subway", lineName: "N / W", details: "Cleaner one-seat ride into Midtown West.", mta: { routeIds: ["N", "W"], originStopId: "R09S", destinationStopId: "R16S", direction: "S" } },
+          { id: "astoria-walk-3", mode: "walk", fromPlaceId: "times-sq-broadway", toPlaceId: "midtown-west", durationMin: 4, label: "Walk", details: "Short finish on foot." },
         ],
       },
       {
@@ -280,8 +292,8 @@ export const scenarios: Scenario[] = [
         metrics: { totalMin: 30, walkMin: 5, micromobilityMin: 6, transfers: 0, costUsd: 6.6, confidence: 0.82 },
         legs: [
           { id: "astoria-ride-2", mode: "shared_micromobility", fromPlaceId: "astoria", toPlaceId: "queensboro-plaza", durationMin: 6, label: "Ride", details: "Shared pickup close to home base." },
-          { id: "astoria-subway-3", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "midtown-west", durationMin: 19, label: "Subway", lineName: "N/W", details: "Direct Manhattan run." },
-          { id: "astoria-walk-4", mode: "walk", fromPlaceId: "midtown-west", toPlaceId: "midtown-west", durationMin: 5, label: "Walk", details: "Short last block walk." },
+          { id: "astoria-subway-3", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "times-sq-broadway", durationMin: 19, label: "Subway", lineName: "N / W", details: "Direct Manhattan run.", mta: { routeIds: ["N", "W"], originStopId: "R09S", destinationStopId: "R16S", direction: "S" } },
+          { id: "astoria-walk-4", mode: "walk", fromPlaceId: "times-sq-broadway", toPlaceId: "midtown-west", durationMin: 5, label: "Walk", details: "Short last block walk." },
         ],
       },
     ],
@@ -306,11 +318,11 @@ export const scenarios: Scenario[] = [
         parking: "Not needed",
         availability: "Always available",
         comfort: "High",
-        metrics: { totalMin: 52, walkMin: 15, micromobilityMin: 0, transfers: 1, costUsd: 2.9, confidence: 0.81 },
+        metrics: { totalMin: 52, walkMin: 15, micromobilityMin: 0, transfers: 1, costUsd: 3, confidence: 0.81 },
         legs: [
           { id: "sunset-walk-1", mode: "walk", fromPlaceId: "sunset-park", toPlaceId: "atlantic-terminal", durationMin: 12, label: "Walk", details: "Long first-mile walk to start the trip." },
-          { id: "sunset-subway-1", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "fidi", durationMin: 31, label: "Subway", lineName: "R + transfer", details: "Downtown run with a connection before Lower Manhattan." },
-          { id: "sunset-walk-2", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 9, label: "Walk", details: "Street-level finish through FiDi." },
+          { id: "sunset-subway-1", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "wall-st", durationMin: 31, label: "Subway", lineName: "R + transfer", details: "Downtown run with a connection before Lower Manhattan." },
+          { id: "sunset-walk-2", mode: "walk", fromPlaceId: "wall-st", toPlaceId: "fidi", durationMin: 9, label: "Walk", details: "Street-level finish through FiDi." },
         ],
       },
       {
@@ -323,11 +335,11 @@ export const scenarios: Scenario[] = [
         parking: "Easy lock-up near Atlantic entrances",
         availability: "Bring your own bike or scooter",
         comfort: "Longer ride, but efficient protected corridors",
-        metrics: { totalMin: 34, walkMin: 6, micromobilityMin: 9, transfers: 0, costUsd: 2.9, confidence: 0.87 },
+        metrics: { totalMin: 34, walkMin: 6, micromobilityMin: 9, transfers: 0, costUsd: 3, confidence: 0.87 },
         legs: [
           { id: "sunset-ride-1", mode: "personal_micromobility", fromPlaceId: "sunset-park", toPlaceId: "atlantic-terminal", durationMin: 9, label: "Ride", details: "Direct ride to Brooklyn's strongest transfer-free option for this trip." },
-          { id: "sunset-subway-2", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "fidi", durationMin: 19, label: "Subway", lineName: "4/5", details: "Fast downtown service with no extra switch." },
-          { id: "sunset-walk-3", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Short walk into the destination core." },
+          { id: "sunset-subway-2", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "wall-st", durationMin: 19, label: "Subway", lineName: "4/5", details: "Fast downtown service with no extra switch.", mta: { routeIds: ["4", "5"], originStopId: "235N", destinationStopId: "419N", direction: "N" } },
+          { id: "sunset-walk-3", mode: "walk", fromPlaceId: "wall-st", toPlaceId: "fidi", durationMin: 6, label: "Walk", details: "Short walk into the destination core." },
         ],
       },
       {
@@ -343,8 +355,8 @@ export const scenarios: Scenario[] = [
         metrics: { totalMin: 39, walkMin: 5, micromobilityMin: 8, transfers: 0, costUsd: 7.1, confidence: 0.8 },
         legs: [
           { id: "sunset-ride-2", mode: "shared_micromobility", fromPlaceId: "sunset-park", toPlaceId: "atlantic-terminal", durationMin: 8, label: "Ride", details: "Shared pickup to a stronger transit node." },
-          { id: "sunset-subway-3", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "fidi", durationMin: 26, label: "Subway", lineName: "4/5", details: "Fast run downtown." },
-          { id: "sunset-walk-4", mode: "walk", fromPlaceId: "fidi", toPlaceId: "fidi", durationMin: 5, label: "Walk", details: "Short finish on foot." },
+          { id: "sunset-subway-3", mode: "transit", fromPlaceId: "atlantic-terminal", toPlaceId: "wall-st", durationMin: 26, label: "Subway", lineName: "4/5", details: "Fast run downtown.", mta: { routeIds: ["4", "5"], originStopId: "235N", destinationStopId: "419N", direction: "N" } },
+          { id: "sunset-walk-4", mode: "walk", fromPlaceId: "wall-st", toPlaceId: "fidi", durationMin: 5, label: "Walk", details: "Short finish on foot." },
         ],
       },
     ],
@@ -352,9 +364,9 @@ export const scenarios: Scenario[] = [
   {
     id: "lic-to-flatiron",
     title: "Long Island City to Flatiron",
-    headline: "Even short trips benefit when a quick ride trims the access walk.",
+    headline: "Even short trips benefit when a quick ride reaches a stronger Broadway stop.",
     description:
-      "This scenario shows the lighter-weight win: micromobility does not change the whole network, but it smooths the trip enough to matter.",
+      "This scenario shows the lighter-weight win: micromobility can shift you onto a cleaner Broadway path with a shorter finish into Flatiron.",
     originId: "lic",
     destinationId: "flatiron",
     heroMetric: "Up to 6 min faster with a cleaner finish",
@@ -369,11 +381,11 @@ export const scenarios: Scenario[] = [
         parking: "Not needed",
         availability: "Always available",
         comfort: "High",
-        metrics: { totalMin: 25, walkMin: 8, micromobilityMin: 0, transfers: 0, costUsd: 2.9, confidence: 0.88 },
+        metrics: { totalMin: 25, walkMin: 8, micromobilityMin: 0, transfers: 0, costUsd: 3, confidence: 0.88 },
         legs: [
-          { id: "lic-walk-1", mode: "walk", fromPlaceId: "lic", toPlaceId: "court-square", durationMin: 6, label: "Walk", details: "Initial walk to station access." },
-          { id: "lic-subway-1", mode: "transit", fromPlaceId: "court-square", toPlaceId: "flatiron", durationMin: 13, label: "Subway", lineName: "E", details: "Direct into Manhattan with a moderate final walk." },
-          { id: "lic-walk-2", mode: "walk", fromPlaceId: "flatiron", toPlaceId: "flatiron", durationMin: 6, label: "Walk", details: "Final approach on foot." },
+          { id: "lic-walk-1", mode: "walk", fromPlaceId: "lic", toPlaceId: "queensboro-plaza", durationMin: 6, label: "Walk", details: "Initial walk to Broadway service." },
+          { id: "lic-subway-1", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "23-r", durationMin: 13, label: "Subway", lineName: "N / W", details: "Broadway service with a short final walk into Flatiron.", mta: { routeIds: ["N", "W"], originStopId: "R09S", destinationStopId: "R19S", direction: "S" } },
+          { id: "lic-walk-2", mode: "walk", fromPlaceId: "23-r", toPlaceId: "flatiron", durationMin: 6, label: "Walk", details: "Final approach on foot." },
         ],
       },
       {
@@ -382,15 +394,15 @@ export const scenarios: Scenario[] = [
         micromobilityMode: "personal",
         isTransitOnly: false,
         bestFor: "smoothest trip",
-        unlock: "Cuts the first-mile walk without adding transfer complexity",
+        unlock: "Cuts the first-mile walk while keeping a clean Broadway ride",
         parking: "Easy parking near Court Sq",
         availability: "Bring your own bike or scooter",
         comfort: "Short, low-stress ride",
-        metrics: { totalMin: 19, walkMin: 3, micromobilityMin: 5, transfers: 0, costUsd: 2.9, confidence: 0.9 },
+        metrics: { totalMin: 19, walkMin: 3, micromobilityMin: 5, transfers: 0, costUsd: 3, confidence: 0.9 },
         legs: [
-          { id: "lic-ride-1", mode: "personal_micromobility", fromPlaceId: "lic", toPlaceId: "court-square", durationMin: 5, label: "Ride", details: "Use micromobility to reduce the slow access walk." },
-          { id: "lic-subway-2", mode: "transit", fromPlaceId: "court-square", toPlaceId: "flatiron", durationMin: 11, label: "Subway", lineName: "E", details: "Direct Manhattan ride." },
-          { id: "lic-walk-3", mode: "walk", fromPlaceId: "flatiron", toPlaceId: "flatiron", durationMin: 3, label: "Walk", details: "Short finish from the station." },
+          { id: "lic-ride-1", mode: "personal_micromobility", fromPlaceId: "lic", toPlaceId: "queensboro-plaza", durationMin: 5, label: "Ride", details: "Use micromobility to reduce the slow access walk." },
+          { id: "lic-subway-2", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "23-r", durationMin: 11, label: "Subway", lineName: "N / W", details: "Broadway service into the Flatiron core.", mta: { routeIds: ["N", "W"], originStopId: "R09S", destinationStopId: "R19S", direction: "S" } },
+          { id: "lic-walk-3", mode: "walk", fromPlaceId: "23-r", toPlaceId: "flatiron", durationMin: 3, label: "Walk", details: "Short finish from the station." },
         ],
       },
       {
@@ -405,9 +417,9 @@ export const scenarios: Scenario[] = [
         comfort: "High comfort, best for commuters without their own ride",
         metrics: { totalMin: 22, walkMin: 3, micromobilityMin: 5, transfers: 0, costUsd: 6.1, confidence: 0.84 },
         legs: [
-          { id: "lic-ride-2", mode: "shared_micromobility", fromPlaceId: "lic", toPlaceId: "court-square", durationMin: 5, label: "Ride", details: "Pickup nearby shared bike or scooter." },
-          { id: "lic-subway-3", mode: "transit", fromPlaceId: "court-square", toPlaceId: "flatiron", durationMin: 14, label: "Subway", lineName: "E", details: "Direct trip into Manhattan." },
-          { id: "lic-walk-4", mode: "walk", fromPlaceId: "flatiron", toPlaceId: "flatiron", durationMin: 3, label: "Walk", details: "Dock and walk the final blocks." },
+          { id: "lic-ride-2", mode: "shared_micromobility", fromPlaceId: "lic", toPlaceId: "queensboro-plaza", durationMin: 5, label: "Ride", details: "Pickup nearby shared bike or scooter." },
+          { id: "lic-subway-3", mode: "transit", fromPlaceId: "queensboro-plaza", toPlaceId: "23-r", durationMin: 14, label: "Subway", lineName: "N / W", details: "Direct trip into Manhattan.", mta: { routeIds: ["N", "W"], originStopId: "R09S", destinationStopId: "R19S", direction: "S" } },
+          { id: "lic-walk-4", mode: "walk", fromPlaceId: "23-r", toPlaceId: "flatiron", durationMin: 3, label: "Walk", details: "Dock and walk the final blocks." },
         ],
       },
     ],

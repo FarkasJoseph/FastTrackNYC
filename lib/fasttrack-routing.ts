@@ -22,6 +22,8 @@ export interface PlannerPlan {
   rankedRoutes: RouteResult[];
 }
 
+const MAX_WALK_MIN = 20;
+
 function scoreRoute(route: RouteTemplate, preferences: PlannerPreferences) {
   const walkPenalty = preferences.goal === "least_walking" ? 2.8 : 1.4;
   const transferPenalty = preferences.goal === "fewest_transfers" ? 12 : 5;
@@ -79,6 +81,15 @@ export function buildPlannerPlan(
     scenario.routes.find((route) => route.isTransitOnly) ?? scenario.routes[0];
 
   const filteredRoutes = scenario.routes.filter((route) => {
+    if (
+      route.metrics.walkMin > MAX_WALK_MIN ||
+      route.legs.some(
+        (leg) => leg.mode === "walk" && leg.durationMin > MAX_WALK_MIN,
+      )
+    ) {
+      return false;
+    }
+
     if (preferences.micromobilityMode === "avoid") {
       return route.isTransitOnly;
     }
@@ -156,7 +167,8 @@ export function formatMoney(value: number) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: value % 1 === 0 ? 0 : 1,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 
