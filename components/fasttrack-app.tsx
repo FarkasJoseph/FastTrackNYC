@@ -1,22 +1,46 @@
 "use client";
 
-import { startTransition, useState } from "react";
-import { AssistantCard } from "@/components/assistant-card";
-import { MapCard } from "@/components/map-card";
-import { RouteCard } from "@/components/route-card";
-import { ScenarioCardRail } from "@/components/scenario-card-rail";
+import { startTransition, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  Bike,
+  Clock3,
+  Footprints,
+  Route as RouteIcon,
+  Sparkles,
+  TrainFront,
+  Waves,
+} from "lucide-react";
+import { MapStage } from "@/components/map-stage";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   assistantQuestions,
   places,
-  PlannerGoal,
   PlannerPreferences,
+  RouteLeg,
   scenarios,
 } from "@/lib/fasttrack-data";
 import {
   buildPlannerPlan,
   describeRouteDelta,
+  formatMoney,
   getDestinationsForOrigin,
-  getModeLabel,
   getPlaceById,
 } from "@/lib/fasttrack-routing";
 
@@ -26,35 +50,14 @@ type Message = {
   content: string;
 };
 
-const goalOptions: { id: PlannerGoal; label: string; hint: string }[] = [
-  { id: "fastest", label: "Fastest", hint: "Prioritize pure ETA gains." },
-  {
-    id: "fewest_transfers",
-    label: "Fewer transfers",
-    hint: "Prefer cleaner route topology.",
-  },
-  {
-    id: "least_walking",
-    label: "Less walking",
-    hint: "Keep first-mile and final-mile effort low.",
-  },
-  { id: "balance", label: "Balanced", hint: "Blend speed, simplicity, and comfort." },
-];
-
-const micromobilityOptions: {
+const modeOptions: {
   id: PlannerPreferences["micromobilityMode"];
-  label: string;
+  shortLabel: string;
 }[] = [
-  { id: "any", label: "Any micromobility" },
-  { id: "personal", label: "My own bike / scooter" },
-  { id: "shared", label: "Shared only" },
-  { id: "avoid", label: "Transit only" },
-];
-
-const trustBadges = [
-  "NYC demo coverage",
-  "Transit + micromobility",
-  "Explains why it is faster",
+  { id: "any", shortLabel: "Any" },
+  { id: "personal", shortLabel: "Personal" },
+  { id: "shared", shortLabel: "Shared" },
+  { id: "avoid", shortLabel: "Transit only" },
 ];
 
 export function FastTrackApp() {
@@ -65,12 +68,13 @@ export function FastTrackApp() {
     micromobilityMode: "any",
   });
   const [activeRouteId, setActiveRouteId] = useState(scenarios[0].routes[1].id);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "assistant-intro",
       role: "assistant",
       content:
-        "FastTrack NYC compares the transit-only baseline against mixed-mode options, then highlights how micromobility changes the transit graph in your favor.",
+        "FastTrack NYC highlights when micromobility changes your access to better transit, not just when it shortens a walk.",
     },
   ]);
 
@@ -85,7 +89,7 @@ export function FastTrackApp() {
   const activeRoute =
     plan.rankedRoutes.find((route) => route.id === activeRouteId) ??
     plan.recommendedRoute;
-
+  const alternateRoutes = plan.rankedRoutes.filter((route) => route.id !== activeRoute.id);
   const originPlace = getPlaceById(plan.scenario.originId, places);
   const destinationPlace = getPlaceById(plan.scenario.destinationId, places);
 
@@ -101,7 +105,7 @@ export function FastTrackApp() {
         {
           id: `scenario-${scenario.id}`,
           role: "assistant",
-          content: `${scenario.headline} ${scenario.heroMetric}.`,
+          content: `${scenario.heroMetric}. ${scenario.headline}`,
         },
       ]);
     });
@@ -123,12 +127,12 @@ export function FastTrackApp() {
 
     switch (question) {
       case "Why is this route faster?":
-        response = `${activeRoute.name} is ${Math.max(activeRoute.timeSaved, 0)} minutes faster because it ${activeRoute.unlock.toLowerCase()}. That drops the walking burden from ${baseline.metrics.walkMin} to ${activeRoute.metrics.walkMin} minutes and keeps the trip at ${activeRoute.metrics.transfers} transfers.`;
+        response = `${activeRoute.name} is ${Math.max(activeRoute.timeSaved, 0)} minutes faster because it ${activeRoute.unlock.toLowerCase()}. The walking burden drops from ${baseline.metrics.walkMin} to ${activeRoute.metrics.walkMin} minutes.`;
         break;
       case "Can I do this without a rental?":
         response = personalOption
-          ? `Yes. ${personalOption.name} is the best bring-your-own option here. It lands in ${personalOption.metrics.totalMin} minutes and parking stays straightforward: ${personalOption.parking}.`
-          : "The strongest mixed-mode option in this scenario currently depends on shared micromobility, but the transit-only baseline remains available if you do not want a rental.";
+          ? `Yes. ${personalOption.name} is the strongest bring-your-own option here. It lands in ${personalOption.metrics.totalMin} minutes and parking stays straightforward: ${personalOption.parking}.`
+          : "This scenario's strongest mixed-mode option currently depends on shared micromobility. The transit-only baseline is still available if you want to avoid rentals.";
         break;
       case "Show me the least walking option.":
         response = `${leastWalking.name} keeps walking to ${leastWalking.metrics.walkMin} minutes. ${leastWalking.unlock}.`;
@@ -140,7 +144,7 @@ export function FastTrackApp() {
         response = `${activeRoute.name}: ${activeRoute.parking}. Availability signal: ${activeRoute.availability}.`;
         break;
       default:
-        response = `Micromobility saves ${Math.max(activeRoute.timeSaved, 0)} minutes on this trip by improving your access to stronger transit, not just by shortening the last block.`;
+        response = `Micromobility saves ${Math.max(activeRoute.timeSaved, 0)} minutes here by changing how you enter the transit network.`;
     }
 
     setMessages((current) => [
@@ -155,301 +159,438 @@ export function FastTrackApp() {
   }
 
   return (
-    <main className="relative overflow-hidden">
-      <div className="mx-auto flex min-h-screen max-w-[1480px] flex-col gap-8 px-4 py-4 sm:px-6 lg:px-8">
-        <header className="glass-panel rounded-[30px] px-5 py-4 sm:px-6">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
-              <div className="glow-ring flex h-12 w-12 items-center justify-center rounded-2xl bg-[rgba(102,225,218,0.14)] text-lg font-semibold text-[var(--teal)]">
-                FT
+    <main className="min-h-screen bg-background px-3 py-3 text-foreground sm:px-4 sm:py-4">
+      <div className="mx-auto max-w-[1500px]">
+        <div className="app-shell grid min-h-[760px] gap-3 overflow-hidden rounded-[2rem] p-3 sm:h-[calc(100svh-2rem)] sm:grid-cols-1 sm:p-4 lg:grid-cols-[430px_minmax(0,1fr)] lg:gap-4">
+          <aside className="overlay-surface flex min-h-0 flex-col rounded-[1.75rem] p-4 sm:p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]">
+                <RouteIcon className="size-5" />
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.32em] text-[var(--teal)]">
+                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--text-soft)]">
                   FastTrack NYC
                 </p>
-                <p className="text-sm text-[var(--muted)]">
-                  Mixed-mode routing for New York commuters
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              {trustBadges.map((badge) => (
-                <span
-                  key={badge}
-                  className="pill rounded-full px-4 py-2 text-xs uppercase tracking-[0.18em] text-[var(--muted)]"
-                >
-                  {badge}
-                </span>
-              ))}
-            </div>
-          </div>
-        </header>
-
-        <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-          <div className="glass-panel relative overflow-hidden rounded-[34px] px-6 py-7 sm:px-8 sm:py-8">
-            <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-[rgba(115,167,255,0.18)] blur-3xl" />
-            <div className="absolute bottom-[-2rem] left-[-2rem] h-44 w-44 rounded-full bg-[rgba(102,225,218,0.16)] blur-3xl" />
-
-            <div className="relative z-10 flex flex-col gap-8">
-              <div className="max-w-3xl">
-                <p className="mb-4 text-sm uppercase tracking-[0.3em] text-[var(--amber)]">
-                  Faster commutes by unlocking better transit
-                </p>
-                <h1 className="max-w-4xl text-4xl font-semibold leading-[1.02] tracking-[-0.04em] text-white sm:text-5xl xl:text-6xl">
-                  Ride a few minutes. Skip the slow transfer chain. Reach better
-                  transit faster.
+                <h1 className="text-lg font-medium tracking-[-0.04em] text-[var(--text)]">
+                  Mixed-mode trip planner
                 </h1>
-                <p className="mt-5 max-w-2xl text-base leading-7 text-[var(--muted)] sm:text-lg">
-                  FastTrack NYC compares the usual subway-and-walk trip with mixed-mode
-                  options that use your own bike, your own scooter, or shared
-                  micromobility to unlock stronger stations and faster service.
-                </p>
               </div>
+            </div>
 
-              <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-                <div className="route-accent rounded-[28px] border border-[var(--line)] p-5">
-                  <div className="grid gap-4">
-                    <div>
-                      <p className="text-sm uppercase tracking-[0.24em] text-[var(--sky)]">
-                        Plan a commute
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                        Demo mode is intentionally curated around strong NYC scenarios.
-                        Every result compares the baseline against route shapes that
-                        unlock better transit.
-                      </p>
-                    </div>
+            <div className="mt-4 grid gap-3">
+              <PlannerField
+                label="Origin"
+                value={originId}
+                onValueChange={(value) => {
+                  const nextDestinations = getDestinationsForOrigin(value);
 
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Origin
-                        </span>
-                        <select
-                          value={originId}
-                          onChange={(event) => {
-                            const nextOriginId = event.target.value;
-                            const nextDestinations = getDestinationsForOrigin(nextOriginId);
-
-                            setOriginId(nextOriginId);
-                            setDestinationId(
-                              nextDestinations[0]?.destinationId ??
-                                scenarios[0].destinationId,
-                            );
-                          }}
-                          className="w-full rounded-2xl border border-[var(--line)] bg-[rgba(2,10,20,0.46)] px-4 py-3 text-sm text-white outline-none transition focus:border-[rgba(102,225,218,0.44)]"
-                        >
-                          {Array.from(
-                            new Set(scenarios.map((scenario) => scenario.originId)),
-                          ).map((value) => {
-                            const place = getPlaceById(value, places);
-
-                            return (
-                              <option key={value} value={value}>
-                                {place?.name}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </label>
-
-                      <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Destination
-                        </span>
-                        <select
-                          value={resolvedDestinationId}
-                          onChange={(event) => setDestinationId(event.target.value)}
-                          className="w-full rounded-2xl border border-[var(--line)] bg-[rgba(2,10,20,0.46)] px-4 py-3 text-sm text-white outline-none transition focus:border-[rgba(102,225,218,0.44)]"
-                        >
-                          {destinationOptions.map((scenario) => {
-                            const place = getPlaceById(scenario.destinationId, places);
-
-                            return (
-                              <option
-                                key={scenario.destinationId}
-                                value={scenario.destinationId}
-                              >
-                                {place?.name}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="grid gap-3">
-                      <span className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                        Micromobility mode
-                      </span>
-                      <div className="grid gap-2">
-                        {micromobilityOptions.map((option) => {
-                          const isSelected =
-                            preferences.micromobilityMode === option.id;
-
-                          return (
-                            <button
-                              key={option.id}
-                              type="button"
-                              onClick={() =>
-                                setPreferences((current) => ({
-                                  ...current,
-                                  micromobilityMode: option.id,
-                                }))
-                              }
-                              className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${
-                                isSelected
-                                  ? "border-[rgba(247,191,103,0.5)] bg-[rgba(247,191,103,0.12)] text-white"
-                                  : "border-[var(--line)] bg-[rgba(255,255,255,0.04)] text-[var(--muted)] hover:border-[rgba(247,191,103,0.4)]"
-                              }`}
-                            >
-                              {option.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="soft-panel rounded-[24px] p-4">
-                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--teal)]">
-                        Current planning lens
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {goalOptions.map((goal) => (
-                          <button
-                            key={goal.id}
-                            type="button"
-                            onClick={() =>
-                              setPreferences((current) => ({
-                                ...current,
-                                goal: goal.id,
-                              }))
-                            }
-                            className={`rounded-full px-4 py-2 text-sm transition ${
-                              preferences.goal === goal.id
-                                ? "bg-white text-slate-950"
-                                : "bg-[rgba(255,255,255,0.06)] text-[var(--muted)] hover:bg-[rgba(255,255,255,0.12)]"
-                            }`}
-                          >
-                            {goal.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="soft-panel rounded-[28px] p-5">
-                  <p className="text-sm uppercase tracking-[0.24em] text-[var(--sky)]">
-                    Why it works
-                  </p>
-                  <div className="mt-4 space-y-4 text-sm leading-6 text-[var(--muted)]">
-                    <p>
-                      FastTrack NYC is built around one idea: micromobility should
-                      improve your access to the transit graph, not just shorten a walk.
-                    </p>
-                    <div className="rounded-3xl border border-[var(--line)] bg-[rgba(255,255,255,0.03)] p-4">
-                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--amber)]">
-                        Current recommendation
-                      </p>
-                      <p className="mt-2 text-2xl font-semibold text-white">
-                        {plan.recommendedRoute.metrics.totalMin} min
-                      </p>
-                      <p className="mt-1 text-sm text-[var(--muted)]">
-                        {describeRouteDelta(
-                          plan.recommendedRoute,
-                          plan.transitOnlyRoute,
-                        )}
-                      </p>
-                    </div>
-                    <p>
-                      Mode setting:{" "}
-                      <span className="text-white">
-                        {getModeLabel(preferences.micromobilityMode)}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-3">
-                {goalOptions.map((goalOption) => {
-                  const isSelected = preferences.goal === goalOption.id;
-
-                  return (
-                    <button
-                      key={goalOption.id}
-                      type="button"
-                      onClick={() =>
-                        setPreferences((current) => ({
-                          ...current,
-                          goal: goalOption.id,
-                        }))
-                      }
-                      className={`rounded-[24px] border px-4 py-4 text-left transition ${
-                        isSelected
-                          ? "border-[rgba(102,225,218,0.44)] bg-[rgba(102,225,218,0.14)]"
-                          : "border-[var(--line)] bg-[rgba(255,255,255,0.03)] hover:border-[rgba(115,167,255,0.44)]"
-                      }`}
-                    >
-                      <p className="text-sm font-medium text-white">{goalOption.label}</p>
-                      <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
-                        {goalOption.hint}
-                      </p>
-                    </button>
+                  setOriginId(value);
+                  setDestinationId(
+                    nextDestinations[0]?.destinationId ?? scenarios[0].destinationId,
                   );
-                })}
-              </div>
-            </div>
-          </div>
+                }}
+                options={Array.from(
+                  new Set(scenarios.map((scenario) => scenario.originId)),
+                ).map((value) => ({
+                  value,
+                  label: getPlaceById(value, places)?.name ?? value,
+                }))}
+              />
 
-          <MapCard plan={plan} activeRoute={activeRoute} />
-        </section>
+              <PlannerField
+                label="Destination"
+                value={resolvedDestinationId}
+                onValueChange={setDestinationId}
+                options={destinationOptions.map((scenario) => ({
+                  value: scenario.destinationId,
+                  label:
+                    getPlaceById(scenario.destinationId, places)?.name ??
+                    scenario.destinationId,
+                }))}
+              />
 
-        <section className="grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
-          <div className="glass-panel rounded-[34px] p-6 sm:p-7">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-[var(--teal)]">
-                  Best route options
+              <div className="planner-glow rounded-[1.35rem] border border-[var(--border-soft)] px-4 py-3">
+                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[var(--text-soft)]">
+                  Micromobility mode
                 </p>
-                <h2 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-white">
-                  {originPlace?.name} to {destinationPlace?.name}
-                </h2>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-                  {plan.scenario.description}
-                </p>
-              </div>
-              <div className="rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-4 py-3 text-sm text-[var(--muted)]">
-                {plan.scenario.heroMetric}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {modeOptions.map((option) => {
+                    const isSelected = preferences.micromobilityMode === option.id;
+
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() =>
+                          setPreferences((current) => ({
+                            ...current,
+                            micromobilityMode: option.id,
+                          }))
+                        }
+                        className={`rounded-full px-3 py-1.5 text-sm transition ${
+                          isSelected
+                            ? "bg-[var(--accent)] text-white"
+                            : "route-pill text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+                        }`}
+                      >
+                        {option.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
-            <div className="mt-6 grid gap-4">
-              {plan.rankedRoutes.map((route) => (
-                <RouteCard
-                  key={route.id}
-                  route={route}
-                  baseline={plan.transitOnlyRoute}
-                  isActive={activeRoute.id === route.id}
-                  onSelect={() => setActiveRouteId(route.id)}
-                />
-              ))}
-            </div>
-          </div>
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="rounded-[1.45rem] bg-[var(--accent-soft)] px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[var(--text-soft)]">
+                      Recommended route
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">
+                      {originPlace?.name} to {destinationPlace?.name}
+                    </p>
+                  </div>
+                  <Badge className="rounded-full bg-white px-3 py-1 text-[var(--text-muted)] shadow-none">
+                    {plan.scenario.heroMetric}
+                  </Badge>
+                </div>
 
-          <div className="flex flex-col gap-6">
-            <AssistantCard
-              questions={assistantQuestions}
-              messages={messages}
-              onQuestionClick={handleAssistantQuestion}
-              activeRouteLabel={activeRoute.name}
-            />
-            <ScenarioCardRail activeScenarioId={plan.scenario.id} onSelect={applyScenario} />
-          </div>
-        </section>
+                <div className="mt-3">
+                  <p className="metric-mono text-3xl font-medium tracking-[-0.05em] text-[var(--text)]">
+                    {activeRoute.metrics.totalMin}
+                    <span className="ml-1 text-base text-[var(--text-muted)]">min</span>
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                    {describeRouteDelta(activeRoute, plan.transitOnlyRoute)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[1.45rem] border border-[var(--border-soft)] bg-[var(--surface)] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-[var(--text)]">
+                      {activeRoute.name}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                      {activeRoute.unlock}
+                    </p>
+                  </div>
+                  <span className="metric-mono text-lg text-[var(--text)]">
+                    {activeRoute.metrics.totalMin}m
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <MetricTile
+                    icon={<Clock3 className="size-4" />}
+                    label="Walking"
+                    value={`${activeRoute.metrics.walkMin} min`}
+                  />
+                  <MetricTile
+                    icon={<Bike className="size-4" />}
+                    label="Micromobility"
+                    value={`${activeRoute.metrics.micromobilityMin} min`}
+                  />
+                  <MetricTile
+                    icon={<RouteIcon className="size-4" />}
+                    label="Transfers"
+                    value={String(activeRoute.metrics.transfers)}
+                  />
+                  <MetricTile
+                    icon={<Waves className="size-4" />}
+                    label="Cost"
+                    value={formatMoney(activeRoute.metrics.costUsd)}
+                  />
+                </div>
+
+                <div className="mt-4 rounded-[1.2rem] bg-[var(--surface-muted)] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-[var(--text)]">Route flow</p>
+                    <p className="text-xs text-[var(--text-muted)]">{activeRoute.parking}</p>
+                  </div>
+                  <RouteTimeline legs={activeRoute.legs} />
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    className="rounded-full bg-[var(--accent)] px-4 text-white hover:bg-[var(--accent)]/90"
+                    onClick={() => setAssistantOpen(true)}
+                  >
+                    <Sparkles className="mr-1 size-4" />
+                    Explain this route
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="rounded-full border-[var(--border-soft)] bg-white text-[var(--text)]"
+                    onClick={() => setActiveRouteId(plan.transitOnlyRoute.id)}
+                  >
+                    Transit-only
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[1.45rem] border border-[var(--border-soft)] bg-[var(--surface)] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-[var(--text)]">Other options</p>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">
+                      Compare route tradeoffs
+                    </p>
+                  </div>
+                  <span className="metric-mono text-sm text-[var(--text-soft)]">
+                    {plan.rankedRoutes.length} total
+                  </span>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {alternateRoutes.map((route) => (
+                    <button
+                      key={route.id}
+                      type="button"
+                      onClick={() => setActiveRouteId(route.id)}
+                      className="w-full rounded-[1.15rem] border border-[var(--border-soft)] bg-white p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--surface-muted)]"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-[var(--text)]">
+                            {route.name}
+                          </p>
+                          <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                            {describeRouteDelta(route, plan.transitOnlyRoute)}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="metric-mono text-lg text-[var(--text)]">
+                            {route.metrics.totalMin}m
+                          </p>
+                          <p className="text-xs text-[var(--text-soft)]">
+                            {route.bestFor}
+                          </p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <Separator className="my-4 bg-[var(--border-soft)]" />
+
+                <div>
+                  <p className="text-sm font-medium text-[var(--text)]">Demo stories</p>
+                  <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                    {scenarios.map((scenario) => (
+                      <button
+                        key={scenario.id}
+                        type="button"
+                        onClick={() => applyScenario(scenario.id)}
+                        className={`min-w-[210px] rounded-[1.15rem] border px-4 py-3 text-left transition ${
+                          scenario.id === plan.scenario.id
+                            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                            : "border-[var(--border-soft)] bg-white hover:border-[var(--border-strong)] hover:bg-[var(--surface-muted)]"
+                        }`}
+                      >
+                        <p className="text-sm font-medium text-[var(--text)]">
+                          {scenario.title}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                          {scenario.heroMetric}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <section className="min-h-[420px] overflow-hidden rounded-[1.75rem] lg:min-h-0">
+            <MapStage plan={plan} activeRoute={activeRoute} className="h-full min-h-[420px]" />
+          </section>
+        </div>
       </div>
+
+      <Sheet open={assistantOpen} onOpenChange={setAssistantOpen}>
+        <SheetContent
+          side="bottom"
+          showCloseButton
+          className="mx-auto h-auto max-h-[82svh] max-w-4xl rounded-t-[1.75rem] border-[var(--border-soft)] bg-[var(--surface)] px-0 pb-0"
+        >
+          <SheetHeader className="border-b border-[var(--border-soft)] px-5 py-4">
+            <SheetTitle className="text-xl tracking-[-0.03em] text-[var(--text)]">
+              Explain this route
+            </SheetTitle>
+            <SheetDescription className="text-[var(--text-muted)]">
+              {activeRoute.name} | {describeRouteDelta(activeRoute, plan.transitOnlyRoute)}
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="grid gap-5 overflow-y-auto px-5 py-5 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-3">
+              <AnimatePresence mode="popLayout">
+                {messages.slice(-5).map((message) => (
+                  <motion.div
+                    key={message.id}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className={`rounded-[1.4rem] px-4 py-4 text-sm leading-6 ${
+                      message.role === "assistant"
+                        ? "bg-[var(--surface-muted)] text-[var(--text-muted)]"
+                        : "ml-auto max-w-[92%] bg-[var(--accent-soft)] text-[var(--text)]"
+                    }`}
+                  >
+                    {message.content}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-[1.4rem] bg-[var(--surface-muted)] p-4">
+                <p className="text-sm font-medium text-[var(--text)]">Quick questions</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {assistantQuestions.map((question) => (
+                    <button
+                      key={question}
+                      type="button"
+                      onClick={() => handleAssistantQuestion(question)}
+                      className="rounded-full border border-[var(--border-soft)] bg-white px-3 py-2 text-sm text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-[1.4rem] bg-[var(--surface-muted)] p-4">
+                <p className="text-sm font-medium text-[var(--text)]">Current route signals</p>
+                <div className="mt-3 space-y-2 text-sm text-[var(--text-muted)]">
+                  <p>Parking / docking: {activeRoute.parking}</p>
+                  <p>Availability: {activeRoute.availability}</p>
+                  <p>Comfort: {activeRoute.comfort}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </main>
   );
+}
+
+function PlannerField({
+  label,
+  value,
+  onValueChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <div className="planner-glow rounded-[1.35rem] border border-[var(--border-soft)] px-4 py-3">
+      <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[var(--text-soft)]">
+        {label}
+      </p>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger className="mt-2 h-10 w-full rounded-xl border-0 bg-transparent px-0 text-left text-base font-medium text-[var(--text)] shadow-none focus-visible:ring-0">
+          <SelectValue placeholder={label} />
+        </SelectTrigger>
+        <SelectContent className="rounded-2xl border-[var(--border-soft)] bg-[var(--surface)]">
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function MetricTile({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-[1rem] bg-[var(--surface-muted)] px-3 py-3">
+      <div className="flex items-center gap-2 text-[var(--text-soft)]">{icon}</div>
+      <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.18em] text-[var(--text-soft)]">
+        {label}
+      </p>
+      <p className="metric-mono mt-1 text-base font-medium text-[var(--text)]">{value}</p>
+    </div>
+  );
+}
+
+function RouteTimeline({ legs }: { legs: RouteLeg[] }) {
+  const totalDuration = legs.reduce((sum, leg) => sum + leg.durationMin, 0);
+
+  return (
+    <div className="mt-4">
+      <div className="flex h-2.5 overflow-hidden rounded-full bg-white">
+        {legs.map((leg) => {
+          const width = `${(leg.durationMin / totalDuration) * 100}%`;
+
+          return (
+            <div
+              key={leg.id}
+              style={{ width }}
+              className={
+                leg.mode === "transit"
+                  ? "bg-[var(--transit)]"
+                  : leg.mode === "walk"
+                    ? "bg-[var(--walk)]"
+                    : "bg-[var(--micro)]"
+              }
+            />
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {legs.map((leg) => (
+          <div
+            key={leg.id}
+            className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm ${
+              leg.mode === "transit"
+                ? "mode-transit"
+                : leg.mode === "walk"
+                  ? "mode-walk"
+                  : "mode-micro"
+            }`}
+          >
+            {getLegIcon(leg)}
+            <span>{leg.durationMin} min</span>
+            <span className="hidden text-[var(--text-muted)] sm:inline">
+              {leg.mode === "transit" ? leg.lineName ?? "Transit" : leg.label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getLegIcon(leg: RouteLeg) {
+  if (leg.mode === "transit") {
+    return <TrainFront className="size-4" />;
+  }
+
+  if (leg.mode === "walk") {
+    return <Footprints className="size-4" />;
+  }
+
+  return <Bike className="size-4" />;
 }

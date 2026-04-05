@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import "./globals.css";
-import { Geist } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import { cn } from "@/lib/utils";
-
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+import "mapbox-gl/dist/mapbox-gl.css";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "FastTrack NYC",
@@ -17,8 +17,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("h-full scroll-smooth", "font-sans", geist.variable)}>
-      <body className="min-h-full bg-[var(--page)] text-[var(--ink)] antialiased">
+    <html
+      lang="en"
+      className={cn(
+        "h-full scroll-smooth",
+        GeistSans.variable,
+        GeistMono.variable,
+      )}
+    >
+      <body className="min-h-full bg-background text-foreground antialiased">
         {children}
       </body>
     </html>

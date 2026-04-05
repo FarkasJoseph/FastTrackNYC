@@ -183,5 +183,5 @@ export function describeRouteDelta(route: RouteResult, transitOnlyRoute: RouteRe
     benefits.push(`${route.walkSaved} fewer walk min`);
   }
 
-  return benefits.length > 0 ? benefits.join(" • ") : transitOnlyRoute.unlock;
+  return benefits.length > 0 ? benefits.join(" | ") : transitOnlyRoute.unlock;
 }
