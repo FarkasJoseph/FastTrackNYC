@@ -1,19 +1,59 @@
 import "server-only";
 
-import { places, scenarios, type RouteLeg } from "@/lib/fasttrack-data";
+import { places, scenarios, type Place, type RouteLeg, type RouteTemplate } from "@/lib/fasttrack-data";
+import { fetchDirectionsGeometry, type DirectionsProfile } from "@/lib/mapbox/directions";
 import type { PlannerRouteSurfaceGeometry, RouteSurfaceLegGeometry } from "@/lib/mapbox/types";
+import { getBusShapeSegmentCoordinates } from "@/lib/mta/bus-static";
 
-type DirectionsProfile = "walking" | "cycling";
-
-type CachedRoute = {
-  expiresAt: number;
-  value: Promise<{ coordinates: Array<[number, number]>; durationMin: number }>;
+type RouteCoordinateOverride = {
+  origin?: {
+    lat: number;
+    lng: number;
+  };
+  destination?: {
+    lat: number;
+    lng: number;
+  };
 };
 
-const routeCache = new Map<string, CachedRoute>();
+function getDirectionsProfile(leg: RouteLeg): DirectionsProfile | null {
+  if (leg.mode === "walk") {
+    return "walking";
+  }
 
-function getPlaceCoordinates(placeId: string) {
-  const place = places.find((entry) => entry.id === placeId);
+  if (leg.mode === "bus" && !leg.bus) {
+    return "driving";
+  }
+
+  if (leg.mode === "personal_micromobility" || leg.mode === "shared_micromobility") {
+    return "cycling";
+  }
+
+  return null;
+}
+
+function getPlaceById(placeId: string, placeList: Place[]) {
+  return placeList.find((place) => place.id === placeId);
+}
+
+function getLegacyPlaceCoordinates(
+  placeId: string,
+  route: RouteTemplate,
+  overrides?: RouteCoordinateOverride,
+) {
+  const parentScenario = scenarios.find((scenario) =>
+    scenario.routes.some((entry) => entry.id === route.id),
+  );
+
+  if (parentScenario?.originId === placeId && overrides?.origin) {
+    return [overrides.origin.lng, overrides.origin.lat] as [number, number];
+  }
+
+  if (parentScenario?.destinationId === placeId && overrides?.destination) {
+    return [overrides.destination.lng, overrides.destination.lat] as [number, number];
+  }
+
+  const place = getPlaceById(placeId, places);
 
   if (!place) {
     throw new Error(`Unknown place: ${placeId}`);
@@ -22,86 +62,65 @@ function getPlaceCoordinates(placeId: string) {
   return [place.lng, place.lat] as [number, number];
 }
 
-function getDirectionsProfile(leg: RouteLeg): DirectionsProfile | null {
-  if (leg.mode === "walk") {
-    return "walking";
-  }
+export async function getRouteSurfaceGeometryForRoute(
+  route: RouteTemplate,
+  placeList: Place[],
+): Promise<PlannerRouteSurfaceGeometry> {
+  const legs = await Promise.all(
+    route.legs.map(async (leg) => {
+      const profile = getDirectionsProfile(leg);
 
-  if (
-    leg.mode === "personal_micromobility" ||
-    leg.mode === "shared_micromobility"
-  ) {
-    return "cycling";
-  }
+      if (!profile) {
+        return null;
+      }
 
-  return null;
-}
+      const fromPlace = getPlaceById(leg.fromPlaceId, placeList);
+      const toPlace = getPlaceById(leg.toPlaceId, placeList);
 
-async function fetchDirectionsGeometry(
-  profile: DirectionsProfile,
-  from: [number, number],
-  to: [number, number],
-) {
-  const token = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+      if (!fromPlace || !toPlace) {
+        throw new Error(`Missing place coordinates for ${leg.fromPlaceId} or ${leg.toPlaceId}.`);
+      }
 
-  if (!token) {
-    throw new Error("Missing NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN");
-  }
+      if (fromPlace.lng === toPlace.lng && fromPlace.lat === toPlace.lat) {
+        return null;
+      }
 
-  const cacheKey = `${profile}:${from.join(",")}=>${to.join(",")}`;
-  const cached = routeCache.get(cacheKey);
+      const geometry =
+        leg.mode === "bus" && leg.bus
+          ? {
+              coordinates: await getBusShapeSegmentCoordinates(
+                leg.bus.feedKey as never,
+                leg.bus.shapeId,
+                leg.bus.originStopId,
+                leg.bus.destinationStopId,
+              ),
+              durationMin: leg.durationMin,
+            }
+          : await fetchDirectionsGeometry(
+              profile!,
+              [fromPlace.lng, fromPlace.lat],
+              [toPlace.lng, toPlace.lat],
+            );
 
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.value;
-  }
-
-  const url = new URL(
-    `https://api.mapbox.com/directions/v5/mapbox/${profile}/${from[0]},${from[1]};${to[0]},${to[1]}`,
+      return {
+        legId: leg.id,
+        profile: profile ?? "driving",
+        coordinates: geometry.coordinates,
+        durationMin: geometry.durationMin,
+      } satisfies RouteSurfaceLegGeometry;
+    }),
   );
-  url.searchParams.set("alternatives", "false");
-  url.searchParams.set("geometries", "geojson");
-  url.searchParams.set("overview", "full");
-  url.searchParams.set("steps", "false");
-  url.searchParams.set("access_token", token);
 
-  const value = fetch(url, {
-    cache: "no-store",
-  }).then(async (response) => {
-    if (!response.ok) {
-      throw new Error(`Mapbox directions request failed: ${response.status}`);
-    }
-
-      const payload = (await response.json()) as {
-      routes?: Array<{
-        duration?: number;
-        geometry?: {
-          coordinates?: Array<[number, number]>;
-        };
-      }>;
-    };
-    const route = payload.routes?.[0];
-    const coordinates = route?.geometry?.coordinates;
-
-    if (!coordinates || coordinates.length < 2) {
-      throw new Error("No usable Mapbox geometry returned.");
-    }
-
-    return {
-      coordinates,
-      durationMin: Math.max(1, Math.round((route?.duration ?? 0) / 60)),
-    };
-  });
-
-  routeCache.set(cacheKey, {
-    expiresAt: Date.now() + 5 * 60_000,
-    value,
-  });
-
-  return value;
+  return {
+    routeId: route.id,
+    fetchedAt: new Date().toISOString(),
+    legs: legs.filter((leg): leg is RouteSurfaceLegGeometry => Boolean(leg)),
+  };
 }
 
 export async function getPlannerRouteSurfaceGeometry(
   routeId: string,
+  overrides?: RouteCoordinateOverride,
 ): Promise<PlannerRouteSurfaceGeometry> {
   const route = scenarios
     .flatMap((scenario) => scenario.routes)
@@ -119,18 +138,29 @@ export async function getPlannerRouteSurfaceGeometry(
         return null;
       }
 
-      const from = getPlaceCoordinates(leg.fromPlaceId);
-      const to = getPlaceCoordinates(leg.toPlaceId);
+      const from = getLegacyPlaceCoordinates(leg.fromPlaceId, route, overrides);
+      const to = getLegacyPlaceCoordinates(leg.toPlaceId, route, overrides);
 
       if (from[0] === to[0] && from[1] === to[1]) {
         return null;
       }
 
-      const geometry = await fetchDirectionsGeometry(profile, from, to);
+      const geometry =
+        leg.mode === "bus" && leg.bus
+          ? {
+              coordinates: await getBusShapeSegmentCoordinates(
+                leg.bus.feedKey as never,
+                leg.bus.shapeId,
+                leg.bus.originStopId,
+                leg.bus.destinationStopId,
+              ),
+              durationMin: leg.durationMin,
+            }
+          : await fetchDirectionsGeometry(profile!, from, to);
 
       return {
         legId: leg.id,
-        profile,
+        profile: profile ?? "driving",
         coordinates: geometry.coordinates,
         durationMin: geometry.durationMin,
       } satisfies RouteSurfaceLegGeometry;

@@ -1,6 +1,6 @@
 export interface RouteSurfaceLegGeometry {
   legId: string;
-  profile: "walking" | "cycling";
+  profile: "walking" | "cycling" | "driving";
   coordinates: Array<[number, number]>;
   durationMin: number;
 }

@@ -1,21 +1,23 @@
 import "server-only";
 
-import { scenarios } from "@/lib/fasttrack-data";
+import { scenarios, type RouteTemplate } from "@/lib/fasttrack-data";
+import { getMtaDemoReferenceDate } from "@/lib/mta/demo-time";
 import { transitLegOverrides } from "@/lib/mta/leg-overrides";
 import { getTransitLegIntel } from "@/lib/mta/subway-realtime";
 import { PlannerRouteIntel } from "@/lib/mta/types";
 
-export async function getPlannerRouteIntel(routeId: string): Promise<PlannerRouteIntel> {
-  const route = scenarios.flatMap((scenario) => scenario.routes).find((entry) => entry.id === routeId);
-
-  if (!route) {
-    throw new Error(`Unknown planner route: ${routeId}`);
-  }
-
+export async function getRouteIntelForRoute(route: RouteTemplate): Promise<PlannerRouteIntel> {
   const transitLegs = route.legs.filter((leg) => leg.mode === "transit");
   const resolvedLegs = await Promise.all(
     transitLegs.map(async (leg) => {
-      const override = transitLegOverrides[leg.id];
+      const override = leg.mta
+        ? {
+            fromStopId: leg.mta.originStopId.replace(/[NS]$/, ""),
+            toStopId: leg.mta.destinationStopId.replace(/[NS]$/, ""),
+            routeIds: leg.mta.routeIds,
+            shapeId: leg.mta.shapeId,
+          }
+        : transitLegOverrides[leg.id];
       const legIndex = route.legs.findIndex((candidate) => candidate.id === leg.id);
       const accessLeadMinutes =
         legIndex > 0
@@ -40,8 +42,20 @@ export async function getPlannerRouteIntel(routeId: string): Promise<PlannerRout
   );
 
   return {
-    routeId,
-    fetchedAt: new Date().toISOString(),
+    routeId: route.id,
+    fetchedAt: getMtaDemoReferenceDate().toISOString(),
     transitLegs: resolvedLegs,
   };
+}
+
+export async function getPlannerRouteIntel(routeId: string): Promise<PlannerRouteIntel> {
+  const route = scenarios
+    .flatMap((scenario) => scenario.routes)
+    .find((entry) => entry.id === routeId);
+
+  if (!route) {
+    throw new Error(`Unknown planner route: ${routeId}`);
+  }
+
+  return getRouteIntelForRoute(route);
 }

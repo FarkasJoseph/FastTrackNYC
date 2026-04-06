@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getPlannerRouteSurfaceGeometry,
-  getRouteSurfaceGeometryForRoute,
-} from "@/lib/mapbox/route-surface";
+  getMicromobilityContextForRoute,
+  getPlannerMicromobilityContext,
+} from "@/lib/micromobility/context";
 import type { PlannerRouteRequest } from "@/lib/planner/payload";
 import { stableStringify, withServerCache } from "@/lib/server-cache";
 
@@ -21,8 +21,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const geometry = await withServerCache(
-      "map-route-surface:get",
+    const context = await withServerCache(
+      "micromobility-context:get",
       stableStringify({
         routeId,
         originLat,
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
         destinationLng,
       }),
       () =>
-        getPlannerRouteSurfaceGeometry(routeId, {
+        getPlannerMicromobilityContext(routeId, {
           origin:
             originLat && originLng
               ? {
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
         }),
     );
 
-    return NextResponse.json(geometry, {
+    return NextResponse.json(context, {
       headers: {
         "Cache-Control": "private, max-age=300",
       },
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to resolve route surface geometry.",
+            : "Failed to resolve micromobility context.",
       },
       { status: 500 },
     );
@@ -78,17 +78,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const geometry = await withServerCache(
-      "map-route-surface:post",
+    const context = await withServerCache(
+      "micromobility-context:post",
       stableStringify(payload),
       () =>
-        getRouteSurfaceGeometryForRoute(
+        getMicromobilityContextForRoute(
           payload.route,
           payload.placeList,
         ),
     );
 
-    return NextResponse.json(geometry, {
+    return NextResponse.json(context, {
       headers: {
         "Cache-Control": "private, max-age=300",
       },
@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to resolve route surface geometry.",
+            : "Failed to resolve micromobility context.",
       },
       { status: 500 },
     );

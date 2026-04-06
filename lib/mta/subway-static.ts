@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { parse } from "csv-parse/sync";
-import { transitLegOverrides } from "@/lib/mta/leg-overrides";
+import { getMtaDemoReferenceDate } from "@/lib/mta/demo-time";
 import { MtaLine, MtaStationSummary } from "@/lib/mta/types";
 
 interface RawStop {
@@ -60,6 +60,13 @@ interface RawStopTime {
   stop_sequence: string;
 }
 
+interface RawTransfer {
+  from_stop_id: string;
+  to_stop_id: string;
+  transfer_type?: string;
+  min_transfer_time?: string;
+}
+
 interface TripStopTime {
   stopId: string;
   arrivalTime: string;
@@ -87,6 +94,66 @@ export interface TransitPattern {
   scheduledTravelSeconds: number;
 }
 
+function prefersPatternCandidate(candidate: TransitPattern, current?: TransitPattern) {
+  if (!current) {
+    return true;
+  }
+
+  const candidateHasShape = candidate.shapeId.trim().length > 0;
+  const currentHasShape = current.shapeId.trim().length > 0;
+
+  if (candidateHasShape !== currentHasShape) {
+    return candidateHasShape;
+  }
+
+  return candidate.scheduledTravelSeconds < current.scheduledTravelSeconds;
+}
+
+function prefersSearchEdgeCandidate(candidate: TransitSearchEdge, current?: TransitSearchEdge) {
+  if (!current) {
+    return true;
+  }
+
+  const candidateHasShape = (candidate.shapeId ?? "").trim().length > 0;
+  const currentHasShape = (current.shapeId ?? "").trim().length > 0;
+
+  if (candidateHasShape !== currentHasShape) {
+    return candidateHasShape;
+  }
+
+  return candidate.travelSeconds < current.travelSeconds;
+}
+
+export interface TransitSearchEdge {
+  routeId: string;
+  fromStationId: string;
+  toStationId: string;
+  travelSeconds: number;
+  headsign: string;
+  directionId: number | null;
+  shapeId: string;
+}
+
+export interface TransitSearchBoardOption {
+  routeId: string;
+  directionId: number | null;
+}
+
+export interface TransitSearchTransferEdge {
+  fromStationId: string;
+  toStationId: string;
+  transferSeconds: number;
+}
+
+export interface TransitSearchGraph {
+  stations: MtaStationSummary[];
+  stationById: Map<string, MtaStationSummary>;
+  edgesByStationId: Map<string, TransitSearchEdge[]>;
+  routeIdsByStationId: Map<string, string[]>;
+  boardOptionsByStationId: Map<string, TransitSearchBoardOption[]>;
+  transferEdgesByStationId: Map<string, TransitSearchTransferEdge[]>;
+}
+
 interface SubwayStaticData {
   linesById: Map<string, MtaLine>;
   stationsById: Map<string, MtaStationSummary>;
@@ -97,17 +164,43 @@ interface SubwayStaticData {
   stopTimesByTripId: Map<string, TripStopTime[]>;
   calendarsByServiceId: Map<string, RawCalendar>;
   calendarDatesByServiceId: Map<string, RawCalendarDate[]>;
+  transfers: RawTransfer[];
   shapeCoordinatesCache: Map<string, Array<[number, number]>>;
   zip: AdmZip;
 }
 
 const GTFS_ARCHIVE_PATH = path.join(process.cwd(), "gtfs_supplemented.zip");
-const SUPPORTED_ROUTE_IDS = Array.from(
-  new Set(Object.values(transitLegOverrides).flatMap((override) => override.routeIds)),
-);
+const SUPPORTED_ROUTE_IDS = [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "6X",
+  "7",
+  "7X",
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "FX",
+  "G",
+  "J",
+  "L",
+  "M",
+  "N",
+  "Q",
+  "R",
+  "W",
+  "Z",
+];
 
 let staticDataPromise: Promise<SubwayStaticData> | undefined;
 const patternCache = new Map<string, TransitPattern[]>();
+let transitSearchGraphPromise: Promise<TransitSearchGraph> | undefined;
 
 function readZipText(zip: AdmZip, entryName: string) {
   const entry = zip.getEntry(entryName);
@@ -163,6 +256,7 @@ async function loadStaticData(): Promise<SubwayStaticData> {
   );
   const rawCalendars = parseCsv<RawCalendar>(readZipText(zip, "calendar.txt"));
   const rawCalendarDates = parseCsv<RawCalendarDate>(readZipText(zip, "calendar_dates.txt"));
+  const rawTransfers = parseCsv<RawTransfer>(readZipText(zip, "transfers.txt"));
   const rawTrips = parseCsv<RawTrip>(readZipText(zip, "trips.txt")).filter((trip) =>
     SUPPORTED_ROUTE_IDS.includes(trip.route_id),
   );
@@ -278,6 +372,7 @@ async function loadStaticData(): Promise<SubwayStaticData> {
     stopTimesByTripId,
     calendarsByServiceId,
     calendarDatesByServiceId,
+    transfers: rawTransfers,
     shapeCoordinatesCache: new Map(),
     zip,
   };
@@ -304,12 +399,32 @@ export async function getShapeCoordinates(shapeId: string) {
   const data = await getSubwayStaticData();
   const cached = data.shapeCoordinatesCache.get(shapeId);
 
-  if (cached) {
+  if (cached && cached.length > 0) {
     return cached;
+  }
+
+  if (cached && cached.length === 0) {
+    data.shapeCoordinatesCache.delete(shapeId);
   }
 
   const content = readZipText(data.zip, "shapes.txt");
   const lines = content.split(/\r?\n/);
+  const header = lines[0]?.split(",") ?? [];
+  const shapeIdIndex = header.indexOf("shape_id");
+  const sequenceIndex = header.indexOf("shape_pt_sequence");
+  const latIndex = header.indexOf("shape_pt_lat");
+  const lngIndex = header.indexOf("shape_pt_lon");
+
+  if (
+    shapeIdIndex === -1 ||
+    sequenceIndex === -1 ||
+    latIndex === -1 ||
+    lngIndex === -1
+  ) {
+    throw new Error("Unexpected GTFS shapes.txt header format.");
+  }
+
+  const normalizedShapeId = shapeId.trim();
   const coordinates: Array<{ sequence: number; point: [number, number] }> = [];
 
   for (let index = 1; index < lines.length; index += 1) {
@@ -319,15 +434,24 @@ export async function getShapeCoordinates(shapeId: string) {
       continue;
     }
 
-    const [candidateShapeId, sequence, lat, lng] = line.split(",");
+    const columns = line.split(",");
+    const candidateShapeId = columns[shapeIdIndex]?.trim();
 
-    if (candidateShapeId !== shapeId) {
+    if (candidateShapeId !== normalizedShapeId) {
+      continue;
+    }
+
+    const lat = Number(columns[latIndex]);
+    const lng = Number(columns[lngIndex]);
+    const sequence = Number(columns[sequenceIndex]);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(sequence)) {
       continue;
     }
 
     coordinates.push({
-      sequence: Number(sequence),
-      point: [Number(lng), Number(lat)],
+      sequence,
+      point: [lng, lat],
     });
   }
 
@@ -385,7 +509,72 @@ export async function getShapeSegmentCoordinates(
   return originIndex <= destinationIndex ? segment : [...segment].reverse();
 }
 
-export async function getActiveServiceIds(date = new Date()) {
+export async function getTripStopPathCoordinates(
+  tripId: string,
+  originStopId: string,
+  destinationStopId: string,
+) {
+  const data = await getSubwayStaticData();
+  const stopTimes = data.stopTimesByTripId.get(tripId) ?? [];
+
+  if (stopTimes.length < 2) {
+    return [] as Array<[number, number]>;
+  }
+
+  const originCandidates = new Set<string>([
+    originStopId,
+    ...(data.childStopIdsByStationId.get(originStopId) ?? []),
+  ]);
+  const destinationCandidates = new Set<string>([
+    destinationStopId,
+    ...(data.childStopIdsByStationId.get(destinationStopId) ?? []),
+  ]);
+
+  const originParentStation = data.stopsById.get(originStopId)?.id;
+  const destinationParentStation = data.stopsById.get(destinationStopId)?.id;
+
+  if (originParentStation) {
+    originCandidates.add(originParentStation);
+  }
+
+  if (destinationParentStation) {
+    destinationCandidates.add(destinationParentStation);
+  }
+
+  const originIndex = stopTimes.findIndex((stopTime) => originCandidates.has(stopTime.stopId));
+  const destinationIndex = stopTimes.findIndex(
+    (stopTime, index) =>
+      destinationCandidates.has(stopTime.stopId) && index > originIndex,
+  );
+
+  if (originIndex === -1 || destinationIndex === -1) {
+    return [] as Array<[number, number]>;
+  }
+
+  const segment = stopTimes.slice(originIndex, destinationIndex + 1);
+  const coordinates: Array<[number, number]> = [];
+  let lastPoint: [number, number] | undefined;
+
+  for (const stopTime of segment) {
+    const stop =
+      data.stopsById.get(stopTime.stopId) ?? data.stationsById.get(stopTime.stopId);
+
+    if (!stop) {
+      continue;
+    }
+
+    const point: [number, number] = [stop.lng, stop.lat];
+
+    if (!lastPoint || lastPoint[0] !== point[0] || lastPoint[1] !== point[1]) {
+      coordinates.push(point);
+      lastPoint = point;
+    }
+  }
+
+  return coordinates.length >= 2 ? coordinates : [];
+}
+
+export async function getActiveServiceIds(date = getMtaDemoReferenceDate()) {
   const data = await getSubwayStaticData();
   const { year, month, day, weekday } = getNewYorkDateParts(date);
   const serviceDate = `${year}${month}${day}`;
@@ -441,7 +630,7 @@ export async function getUpcomingScheduledDepartures(
   toStationId: string,
   limit = 3,
   accessLeadMinutes = 0,
-  date = new Date(),
+  date = getMtaDemoReferenceDate(),
 ) {
   const patterns = await findTransitPatterns(routeIds, fromStationId, toStationId);
   const data = await getSubwayStaticData();
@@ -587,7 +776,7 @@ export async function findTransitPatterns(
         scheduledTravelSeconds: travelSeconds,
       };
 
-      if (!bestMatch || candidate.scheduledTravelSeconds < bestMatch.scheduledTravelSeconds) {
+      if (prefersPatternCandidate(candidate, bestMatch)) {
         bestMatch = candidate;
       }
     }
@@ -599,4 +788,209 @@ export async function findTransitPatterns(
 
   patternCache.set(cacheKey, matches);
   return matches;
+}
+
+function buildChildStopToStationIdMap(data: SubwayStaticData) {
+  const childStopToStationId = new Map<string, string>();
+
+  for (const [stationId, childStopIds] of data.childStopIdsByStationId.entries()) {
+    for (const childStopId of childStopIds) {
+      childStopToStationId.set(childStopId, stationId);
+    }
+  }
+
+  return childStopToStationId;
+}
+
+function getStationIdForStop(
+  stopId: string,
+  childStopToStationId: Map<string, string>,
+  data: SubwayStaticData,
+) {
+  return childStopToStationId.get(stopId) ?? (data.stationsById.has(stopId) ? stopId : stopId);
+}
+
+async function buildTransitSearchGraph(): Promise<TransitSearchGraph> {
+  const data = await getSubwayStaticData();
+  const childStopToStationId = buildChildStopToStationIdMap(data);
+  const edgeByKey = new Map<string, TransitSearchEdge>();
+  const routeIdsByStationSet = new Map<string, Set<string>>();
+  const boardOptionsByStationSet = new Map<string, Set<string>>();
+  const transferEdgeByKey = new Map<string, TransitSearchTransferEdge>();
+
+  for (const trip of data.tripsById.values()) {
+    const stopTimes = data.stopTimesByTripId.get(trip.id);
+
+    if (!stopTimes || stopTimes.length < 2) {
+      continue;
+    }
+
+    for (let index = 0; index < stopTimes.length - 1; index += 1) {
+      const currentStop = stopTimes[index];
+      const nextStop = stopTimes[index + 1];
+      const fromStationId = getStationIdForStop(currentStop.stopId, childStopToStationId, data);
+      const toStationId = getStationIdForStop(nextStop.stopId, childStopToStationId, data);
+
+      if (fromStationId === toStationId) {
+        continue;
+      }
+
+      const travelSeconds =
+        timeToSeconds(nextStop.arrivalTime) - timeToSeconds(currentStop.departureTime);
+
+      if (travelSeconds <= 0) {
+        continue;
+      }
+
+      const edgeKey = `${trip.routeId}:${fromStationId}:${toStationId}`;
+      const existingEdge = edgeByKey.get(edgeKey);
+      const candidate: TransitSearchEdge = {
+        routeId: trip.routeId,
+        fromStationId,
+        toStationId,
+        travelSeconds,
+        headsign: trip.headsign,
+        directionId: trip.directionId,
+        shapeId: trip.shapeId,
+      };
+
+      if (
+        prefersSearchEdgeCandidate(
+          candidate,
+          existingEdge,
+        )
+      ) {
+        edgeByKey.set(edgeKey, candidate);
+      }
+
+      const fromRoutes = routeIdsByStationSet.get(fromStationId) ?? new Set<string>();
+      fromRoutes.add(trip.routeId);
+      routeIdsByStationSet.set(fromStationId, fromRoutes);
+
+      const toRoutes = routeIdsByStationSet.get(toStationId) ?? new Set<string>();
+      toRoutes.add(trip.routeId);
+      routeIdsByStationSet.set(toStationId, toRoutes);
+
+      const boardOptionKey = `${trip.routeId}:${trip.directionId ?? "x"}`;
+      const fromBoardOptions =
+        boardOptionsByStationSet.get(fromStationId) ?? new Set<string>();
+      fromBoardOptions.add(boardOptionKey);
+      boardOptionsByStationSet.set(fromStationId, fromBoardOptions);
+    }
+  }
+
+  const edgesByStationId = new Map<string, TransitSearchEdge[]>();
+
+  for (const edge of edgeByKey.values()) {
+    const currentEdges = edgesByStationId.get(edge.fromStationId) ?? [];
+    currentEdges.push(edge);
+    edgesByStationId.set(edge.fromStationId, currentEdges);
+  }
+
+  for (const [stationId, edges] of edgesByStationId.entries()) {
+    edges.sort((left, right) => left.travelSeconds - right.travelSeconds);
+    edgesByStationId.set(stationId, edges);
+  }
+
+  for (const transfer of data.transfers) {
+    const fromStationId = getStationIdForStop(
+      transfer.from_stop_id,
+      childStopToStationId,
+      data,
+    );
+    const toStationId = getStationIdForStop(
+      transfer.to_stop_id,
+      childStopToStationId,
+      data,
+    );
+
+    if (
+      !fromStationId ||
+      !toStationId ||
+      fromStationId === toStationId ||
+      !data.stationsById.has(fromStationId) ||
+      !data.stationsById.has(toStationId)
+    ) {
+      continue;
+    }
+
+    const transferType =
+      transfer.transfer_type === undefined || transfer.transfer_type === ""
+        ? 0
+        : Number(transfer.transfer_type);
+
+    if (Number.isNaN(transferType) || transferType === 3) {
+      continue;
+    }
+
+    const rawTransferSeconds =
+      transfer.min_transfer_time === undefined || transfer.min_transfer_time === ""
+        ? 180
+        : Number(transfer.min_transfer_time);
+    const transferSeconds = Math.max(
+      60,
+      Number.isNaN(rawTransferSeconds) ? 180 : rawTransferSeconds,
+    );
+    const transferKey = `${fromStationId}:${toStationId}`;
+    const existingTransfer = transferEdgeByKey.get(transferKey);
+
+    if (!existingTransfer || transferSeconds < existingTransfer.transferSeconds) {
+      transferEdgeByKey.set(transferKey, {
+        fromStationId,
+        toStationId,
+        transferSeconds,
+      });
+    }
+  }
+
+  const transferEdgesByStationId = new Map<string, TransitSearchTransferEdge[]>();
+
+  for (const transferEdge of transferEdgeByKey.values()) {
+    const currentEdges = transferEdgesByStationId.get(transferEdge.fromStationId) ?? [];
+    currentEdges.push(transferEdge);
+    transferEdgesByStationId.set(transferEdge.fromStationId, currentEdges);
+  }
+
+  for (const [stationId, transferEdges] of transferEdgesByStationId.entries()) {
+    transferEdges.sort((left, right) => left.transferSeconds - right.transferSeconds);
+    transferEdgesByStationId.set(stationId, transferEdges);
+  }
+
+  return {
+    stations: Array.from(routeIdsByStationSet.keys())
+      .map((stationId) => data.stationsById.get(stationId))
+      .filter((station): station is MtaStationSummary => Boolean(station)),
+    stationById: new Map(data.stationsById.entries()),
+    edgesByStationId,
+    routeIdsByStationId: new Map(
+      Array.from(routeIdsByStationSet.entries()).map(([stationId, routeIds]) => [
+        stationId,
+        Array.from(routeIds.values()).sort(),
+      ]),
+    ),
+    boardOptionsByStationId: new Map(
+      Array.from(boardOptionsByStationSet.entries()).map(([stationId, boardOptions]) => [
+        stationId,
+        Array.from(boardOptions.values())
+          .map((entry) => {
+            const [routeId, rawDirectionId] = entry.split(":");
+            return {
+              routeId,
+              directionId: rawDirectionId === "x" ? null : Number(rawDirectionId),
+            } satisfies TransitSearchBoardOption;
+          })
+          .sort(
+            (left, right) =>
+              left.routeId.localeCompare(right.routeId) ||
+              (left.directionId ?? -1) - (right.directionId ?? -1),
+          ),
+      ]),
+    ),
+    transferEdgesByStationId,
+  };
+}
+
+export async function getTransitSearchGraph() {
+  transitSearchGraphPromise ??= buildTransitSearchGraph();
+  return transitSearchGraphPromise;
 }

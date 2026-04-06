@@ -2,10 +2,15 @@ import "server-only";
 
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import {
+  getMtaDemoReferenceMs,
+  getMtaDemoReferenceSeconds,
+} from "@/lib/mta/demo-time";
+import {
   findTransitPatterns,
   getLineSummaries,
   getShapeCoordinates,
   getShapeSegmentCoordinates,
+  getTripStopPathCoordinates,
   getUpcomingScheduledDepartures,
   getStationSummary,
 } from "@/lib/mta/subway-static";
@@ -13,12 +18,27 @@ import { TransitLegOverride } from "@/lib/mta/leg-overrides";
 import { MtaAlertSummary, MtaTransitLegIntel } from "@/lib/mta/types";
 
 const FEED_URLS: Record<string, string> = {
+  "1": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+  "2": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+  "3": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
   "4": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
   "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
   "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+  "6X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+  "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-7",
+  "7X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-7",
   E: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+  A: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+  C: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+  B: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+  D: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+  F: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+  FX: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+  M: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+  G: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
   J: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
   Z: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
+  L: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
   N: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
   Q: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
   R: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
@@ -27,6 +47,10 @@ const FEED_URLS: Record<string, string> = {
 
 const ALERTS_URL =
   "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts.json";
+const MTA_API_KEY =
+  process.env.MTA_API_KEY ??
+  process.env.MTA_API_ACCESS_KEY ??
+  process.env.MTA_API_TOKEN;
 
 type CachedValue<T> = {
   expiresAt: number;
@@ -39,6 +63,20 @@ const responseCache = new Map<string, CachedValue<Buffer>>();
 const decodedFeedCache = new Map<string, CachedValue<DecodedFeed>>();
 const alertsCache = new Map<string, CachedValue<MtaAlertSummary[]>>();
 
+function decodePreview(buffer: Buffer, maxLength = 160) {
+  return buffer.toString("utf8", 0, Math.min(buffer.length, maxLength)).trim();
+}
+
+function isLikelyXmlErrorPayload(buffer: Buffer, contentType: string) {
+  const preview = decodePreview(buffer, 80);
+  return (
+    contentType.includes("xml") ||
+    preview.startsWith("<?xml") ||
+    preview.startsWith("<Error") ||
+    preview.startsWith("<")
+  );
+}
+
 async function fetchBuffer(url: string, ttlMs: number) {
   const now = Date.now();
   const cached = responseCache.get(url);
@@ -47,12 +85,42 @@ async function fetchBuffer(url: string, ttlMs: number) {
     return cached.value;
   }
 
-  const value = fetch(url, { cache: "no-store" }).then(async (response) => {
+  const value = fetch(url, {
+    cache: "no-store",
+    headers: MTA_API_KEY
+      ? {
+          "x-api-key": MTA_API_KEY,
+        }
+      : undefined,
+  }).then(async (response) => {
     if (!response.ok) {
-      throw new Error(`Failed to fetch ${url}: ${response.status}`);
+      const authHint =
+        response.status === 401 || response.status === 403
+          ? " MTA realtime feeds now require an API key. Set MTA_API_KEY in your server environment."
+          : "";
+
+      throw new Error(`Failed to fetch ${url}: ${response.status}.${authHint}`.trim());
     }
 
-    return Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") ?? "";
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (buffer.length === 0) {
+      throw new Error("MTA realtime feed returned an empty response.");
+    }
+
+    if (
+      contentType.includes("application/json") ||
+      contentType.includes("text/html") ||
+      isLikelyXmlErrorPayload(buffer, contentType)
+    ) {
+      const preview = decodePreview(buffer);
+      throw new Error(
+        `MTA realtime feed returned ${contentType || "non-protobuf content"} instead of GTFS-RT.${preview ? ` Response preview: ${preview}` : ""}`,
+      );
+    }
+
+    return buffer;
   });
 
   responseCache.set(url, {
@@ -71,9 +139,19 @@ async function getDecodedFeed(url: string) {
     return cached.value;
   }
 
-  const value = fetchBuffer(url, 15_000).then((buffer) =>
-    GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(buffer),
-  );
+  const value = fetchBuffer(url, 15_000).then((buffer) => {
+    try {
+      return GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(buffer);
+    } catch (error) {
+      const preview = buffer.toString("utf8", 0, Math.min(buffer.length, 120)).trim();
+
+      throw new Error(
+        `Failed to decode MTA realtime feed as protobuf.${preview ? ` Response preview: ${preview}` : ""} ${
+          error instanceof Error ? error.message : "Unknown decode error."
+        }`,
+      );
+    }
+  });
 
   decodedFeedCache.set(url, {
     expiresAt: now + 15_000,
@@ -99,10 +177,24 @@ async function getAlerts(routeIds: string[], stopIds: string[]) {
   if (!cached || cached.expiresAt <= now) {
     alertsCache.set(cacheKey, {
       expiresAt: now + 30_000,
-      value: fetch(ALERTS_URL, { cache: "no-store" })
+      value: fetch(ALERTS_URL, {
+        cache: "no-store",
+        headers: MTA_API_KEY
+          ? {
+              "x-api-key": MTA_API_KEY,
+            }
+          : undefined,
+      })
         .then(async (response) => {
           if (!response.ok) {
-            throw new Error(`Failed to fetch MTA alerts: ${response.status}`);
+            const authHint =
+              response.status === 401 || response.status === 403
+                ? " MTA alert feeds now require an API key. Set MTA_API_KEY in your server environment."
+                : "";
+
+            throw new Error(
+              `Failed to fetch MTA alerts: ${response.status}.${authHint}`.trim(),
+            );
           }
 
           return response.json() as Promise<{
@@ -161,6 +253,103 @@ async function getAlerts(routeIds: string[], stopIds: string[]) {
   return alertsCache.get(cacheKey)!.value;
 }
 
+async function buildScheduledTransitLegIntel(
+  legId: string,
+  override: TransitLegOverride,
+  patterns: Awaited<ReturnType<typeof findTransitPatterns>>,
+  lines: Awaited<ReturnType<typeof getLineSummaries>>,
+  fromStation: Awaited<ReturnType<typeof getStationSummary>>,
+  toStation: Awaited<ReturnType<typeof getStationSummary>>,
+  fallbackShapeId: string | undefined,
+  fallbackOriginStopId: string,
+  fallbackDestinationStopId: string,
+  reason?: string,
+  accessLeadMinutes = 0,
+): Promise<MtaTransitLegIntel> {
+  const scheduledDepartures = await getUpcomingScheduledDepartures(
+    override.routeIds,
+    override.fromStopId,
+    override.toStopId,
+    3,
+    accessLeadMinutes,
+  );
+
+  const departures = scheduledDepartures.map((departure) => {
+    const departureInMin = departure.departureInMin;
+    const travelMin = Math.max(1, Math.round(departure.travelSeconds / 60));
+
+    return {
+      tripId: departure.tripId,
+      routeId: departure.routeId,
+      headsign: departure.headsign,
+      departureAt: new Date(getMtaDemoReferenceMs() + departureInMin * 60_000).toISOString(),
+      departureInMin,
+      arrivalAt: new Date(
+        getMtaDemoReferenceMs() + (departureInMin + travelMin) * 60_000,
+      ).toISOString(),
+      travelMin,
+    };
+  });
+
+  const chosenDeparture = scheduledDepartures[0];
+  const chosenShapeId = chosenDeparture?.shapeId || fallbackShapeId;
+  const chosenTravelMin = chosenDeparture
+    ? Math.max(1, Math.round(chosenDeparture.travelSeconds / 60))
+    : Math.max(1, Math.round((patterns[0]?.scheduledTravelSeconds ?? 60) / 60));
+
+  const chosenPattern =
+    (chosenShapeId
+      ? patterns.find((pattern) => pattern.shapeId === chosenShapeId)
+      : undefined) ?? patterns[0];
+  const shapeCoordinates = chosenShapeId
+    ? await getShapeSegmentCoordinates(
+        chosenShapeId,
+        chosenPattern?.originStopId ?? fallbackOriginStopId,
+        chosenPattern?.destinationStopId ?? fallbackDestinationStopId,
+      )
+    : [];
+  const fullShapeCoordinates = chosenShapeId
+    ? await getShapeCoordinates(chosenShapeId)
+    : [];
+  const stopPathCoordinates = chosenPattern?.tripId
+    ? await getTripStopPathCoordinates(
+        chosenPattern.tripId,
+        chosenPattern.originStopId,
+        chosenPattern.destinationStopId,
+      )
+    : [];
+  const geometryCoordinates =
+    shapeCoordinates.length >= 2 ? shapeCoordinates : stopPathCoordinates;
+  const geometryFullCoordinates =
+    fullShapeCoordinates.length >= 2 ? fullShapeCoordinates : stopPathCoordinates;
+  const geometry =
+    geometryCoordinates.length >= 2
+      ? {
+          source: "schedule" as const,
+          coordinates: geometryCoordinates,
+          fullCoordinates: geometryFullCoordinates,
+        }
+      : undefined;
+
+  return {
+    legId,
+    status: departures.length > 0 ? "ok" : "unavailable",
+    reason:
+      departures.length > 0
+        ? reason
+        : "No scheduled departure is available for this leg right now.",
+    lines,
+    fromStation,
+    toStation,
+    headsign: chosenDeparture?.headsign ?? patterns[0]?.headsign,
+    departureInMin: departures[0]?.departureInMin,
+    travelMin: chosenTravelMin,
+    departures: departures.slice(0, 3),
+    alerts: [],
+    geometry,
+  };
+}
+
 export async function getTransitLegIntel(
   legId: string,
   override: TransitLegOverride,
@@ -174,15 +363,34 @@ export async function getTransitLegIntel(
   const lines = await getLineSummaries(override.routeIds);
   const fromStation = await getStationSummary(override.fromStopId);
   const toStation = await getStationSummary(override.toStopId);
+  const fallbackShapeId = patterns[0]?.shapeId || override.shapeId;
+  const fallbackOriginStopId = patterns[0]?.originStopId ?? override.fromStopId;
+  const fallbackDestinationStopId = patterns[0]?.destinationStopId ?? override.toStopId;
 
   if (patterns.length === 0 || !fromStation || !toStation) {
+    const fallbackGeometry =
+      fallbackShapeId && fromStation && toStation
+        ? {
+            source: "schedule" as const,
+            coordinates: await getShapeSegmentCoordinates(
+              fallbackShapeId,
+              fallbackOriginStopId,
+              fallbackDestinationStopId,
+            ),
+            fullCoordinates: await getShapeCoordinates(fallbackShapeId),
+          }
+        : undefined;
+
     return {
       legId,
       status: "unsupported",
       reason: "This transit leg is not yet mapped to a stable subway pattern.",
       lines,
+      fromStation: fromStation ?? undefined,
+      toStation: toStation ?? undefined,
       departures: [],
       alerts: [],
+      geometry: fallbackGeometry,
     };
   }
 
@@ -194,11 +402,27 @@ export async function getTransitLegIntel(
     ),
   );
 
+  if (!MTA_API_KEY || feedUrls.length === 0) {
+    return buildScheduledTransitLegIntel(
+      legId,
+      override,
+      patterns,
+      lines,
+      fromStation,
+      toStation,
+      fallbackShapeId,
+      fallbackOriginStopId,
+      fallbackDestinationStopId,
+      !MTA_API_KEY ? "Realtime unavailable; showing scheduled service." : undefined,
+      accessLeadMinutes,
+    );
+  }
+
   try {
     const feeds = await Promise.all(feedUrls.map((url) => getDecodedFeed(url)));
-    const nowSeconds = Math.floor(Date.now() / 1000);
+    const nowSeconds = getMtaDemoReferenceSeconds();
     const departures: NonNullable<MtaTransitLegIntel["departures"]> = [];
-    let chosenShapeId = patterns[0]?.shapeId;
+    let chosenShapeId = patterns[0]?.shapeId || override.shapeId;
     let chosenHeadsign = patterns[0]?.headsign;
     let chosenTravelMin: number | undefined;
     let chosenDepartureInMin: number | undefined;
@@ -274,7 +498,7 @@ export async function getTransitLegIntel(
         ) {
           chosenDepartureInMin = departureInMin;
           chosenTravelMin = travelMin;
-          chosenShapeId = pattern.shapeId;
+          chosenShapeId = pattern.shapeId || chosenShapeId;
           chosenHeadsign = pattern.headsign;
         }
       }
@@ -287,57 +511,54 @@ export async function getTransitLegIntel(
     }
 
     if (departures.length === 0) {
-      const scheduledDepartures = await getUpcomingScheduledDepartures(
-        override.routeIds,
-        override.fromStopId,
-        override.toStopId,
-        3,
+      return buildScheduledTransitLegIntel(
+        legId,
+        override,
+        patterns,
+        lines,
+        fromStation,
+        toStation,
+        fallbackShapeId,
+        fallbackOriginStopId,
+        fallbackDestinationStopId,
+        "Realtime unavailable for this leg; showing scheduled service.",
         accessLeadMinutes,
       );
-
-      for (const departure of scheduledDepartures) {
-        const departureInMin = departure.departureInMin;
-        const travelMin = Math.max(1, Math.round(departure.travelSeconds / 60));
-
-        departures.push({
-          tripId: departure.tripId,
-          routeId: departure.routeId,
-          headsign: departure.headsign,
-          departureAt: new Date(Date.now() + departureInMin * 60_000).toISOString(),
-          departureInMin,
-          arrivalAt: new Date(
-            Date.now() + (departureInMin + travelMin) * 60_000,
-          ).toISOString(),
-          travelMin,
-        });
-
-        if (
-          chosenDepartureInMin === undefined ||
-          departureInMin < chosenDepartureInMin
-        ) {
-          chosenDepartureInMin = departureInMin;
-          chosenTravelMin = travelMin;
-          chosenShapeId = departure.shapeId;
-          chosenHeadsign = departure.headsign;
-        }
-      }
-
-      departures.sort((left, right) => left.departureInMin - right.departureInMin);
     }
 
-    const geometry = chosenShapeId
-      ? {
-          source: departures.length > 0 ? ("realtime" as const) : ("schedule" as const),
-          coordinates: await getShapeSegmentCoordinates(
-            chosenShapeId,
-            patterns.find((pattern) => pattern.shapeId === chosenShapeId)?.originStopId ??
-              patterns[0].originStopId,
-            patterns.find((pattern) => pattern.shapeId === chosenShapeId)?.destinationStopId ??
-              patterns[0].destinationStopId,
-          ),
-          fullCoordinates: await getShapeCoordinates(chosenShapeId),
-        }
-      : undefined;
+    const chosenPattern =
+      (chosenShapeId
+        ? patterns.find((pattern) => pattern.shapeId === chosenShapeId)
+        : undefined) ?? patterns[0];
+    const shapeCoordinates = chosenShapeId
+      ? await getShapeSegmentCoordinates(
+          chosenShapeId,
+          chosenPattern?.originStopId ?? patterns[0].originStopId,
+          chosenPattern?.destinationStopId ?? patterns[0].destinationStopId,
+        )
+      : [];
+    const fullShapeCoordinates = chosenShapeId
+      ? await getShapeCoordinates(chosenShapeId)
+      : [];
+    const stopPathCoordinates = chosenPattern?.tripId
+      ? await getTripStopPathCoordinates(
+          chosenPattern.tripId,
+          chosenPattern.originStopId,
+          chosenPattern.destinationStopId,
+        )
+      : [];
+    const geometryCoordinates =
+      shapeCoordinates.length >= 2 ? shapeCoordinates : stopPathCoordinates;
+    const geometryFullCoordinates =
+      fullShapeCoordinates.length >= 2 ? fullShapeCoordinates : stopPathCoordinates;
+    const geometry =
+      geometryCoordinates.length >= 2
+        ? {
+            source: departures.length > 0 ? ("realtime" as const) : ("schedule" as const),
+            coordinates: geometryCoordinates,
+            fullCoordinates: geometryFullCoordinates,
+          }
+        : undefined;
     const alerts = await getAlerts(override.routeIds, [
       override.fromStopId,
       override.toStopId,
@@ -360,16 +581,19 @@ export async function getTransitLegIntel(
       alerts,
       geometry,
     };
-  } catch (error) {
-    return {
+  } catch {
+    return buildScheduledTransitLegIntel(
       legId,
-      status: "unavailable",
-      reason: error instanceof Error ? error.message : "Failed to fetch realtime subway data.",
+      override,
+      patterns,
       lines,
       fromStation,
       toStation,
-      departures: [],
-      alerts: [],
-    };
+      fallbackShapeId,
+      fallbackOriginStopId,
+      fallbackDestinationStopId,
+      "Realtime unavailable for this leg; showing scheduled service.",
+      accessLeadMinutes,
+    );
   }
 }
