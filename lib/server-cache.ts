@@ -4,7 +4,7 @@ type CacheEntry<T> = {
 };
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v7";
 
 const globalCacheStore = globalThis as typeof globalThis & {
   __fastTrackServerCache?: Map<string, CacheEntry<unknown>>;

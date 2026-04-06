@@ -11,6 +11,7 @@ import {
 import {
   findTransitPatterns,
   getStationSummary,
+  getUpcomingScheduledDepartures,
 } from "@/lib/mta/subway-static";
 import {
   getTransitNetworkGraph,
@@ -47,6 +48,7 @@ const ACCESS_STATION_CANDIDATE_LIMIT = 12;
 const ACCESS_STATION_EVALUATION_LIMIT = 6;
 const MAX_ROUTE_VARIANTS_PER_MODE = 2;
 const PARKING_BUFFER_MIN = 1;
+const MAX_SUBWAY_WAIT_MIN = 30;
 
 function routeHasTransit(route: RouteTemplate) {
   return route.legs.some((leg) => leg.mode === "transit" || leg.mode === "bus");
@@ -152,6 +154,12 @@ type RouteCandidateResult = {
   availabilityText?: string;
   parkingText?: string;
   confidencePenalty: number;
+};
+
+type ScheduledTransitPathTiming = {
+  totalMin: number;
+  transitTravelMin: number;
+  additionalWaitMin: number;
 };
 
 type RouteModeConfig = {
@@ -664,6 +672,64 @@ function searchTransitPath(
   }
 
   return null;
+}
+
+async function getScheduledTransitPathTiming(
+  transitPath: TransitPath,
+  accessDurationMin: number,
+  egressDurationMin: number,
+) {
+  let elapsedMin = accessDurationMin;
+  let transitTravelMin = 0;
+  let additionalWaitMin = 0;
+
+  for (const step of transitPath.steps) {
+    if (step.type === "transfer") {
+      elapsedMin += step.segment.durationMin;
+      continue;
+    }
+
+    const scheduledTravelMin = Math.max(1, Math.round(step.segment.travelSeconds / 60));
+
+    if (step.segment.mode === "bus") {
+      elapsedMin += scheduledTravelMin;
+      transitTravelMin += scheduledTravelMin;
+      continue;
+    }
+
+    const departure = (
+      await getUpcomingScheduledDepartures(
+        [step.segment.routeId],
+        step.segment.fromStationId,
+        step.segment.toStationId,
+        1,
+        elapsedMin,
+      )
+    )[0];
+
+    if (!departure) {
+      return null;
+    }
+
+    const waitMin = Math.max(0, departure.departureInMin - elapsedMin);
+
+    if (waitMin > MAX_SUBWAY_WAIT_MIN) {
+      return null;
+    }
+
+    const travelMin = Math.max(1, Math.round(departure.travelSeconds / 60));
+    elapsedMin += waitMin + travelMin;
+    transitTravelMin += travelMin;
+    additionalWaitMin += waitMin;
+  }
+
+  elapsedMin += egressDurationMin;
+
+  return {
+    totalMin: elapsedMin,
+    transitTravelMin,
+    additionalWaitMin,
+  } satisfies ScheduledTransitPathTiming;
 }
 
 async function getStationCandidates(
@@ -1515,21 +1581,32 @@ async function buildRouteCandidates(
         continue;
       }
 
+      const scheduledTiming = await getScheduledTransitPathTiming(
+        transitPath,
+        supportContext.accessDurationMin,
+        supportContext.egressDurationMin,
+      );
+
+      if (!scheduledTiming) {
+        continue;
+      }
+
       candidates.push({
-        totalMin:
-          supportContext.accessDurationMin +
-          transitPath.transitTravelMin +
-          transitPath.transferWalkMin +
-          supportContext.egressDurationMin,
+        totalMin: scheduledTiming.totalMin,
         access: accessStation,
         egress: egressStation,
-        transitPath,
+        transitPath: {
+          ...transitPath,
+          transitTravelMin: scheduledTiming.transitTravelMin,
+        },
         accessDurationMin: supportContext.accessDurationMin,
         egressDurationMin: supportContext.egressDurationMin,
         sharedRideMin: supportContext.sharedRideMin,
         availabilityText: supportContext.availabilityText,
         parkingText: supportContext.parkingText,
-        confidencePenalty: supportContext.confidencePenalty,
+        confidencePenalty:
+          supportContext.confidencePenalty +
+          scheduledTiming.additionalWaitMin * 0.01,
       });
     }
   }

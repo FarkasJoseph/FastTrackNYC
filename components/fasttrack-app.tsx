@@ -61,6 +61,7 @@ type RouteRuntimeSummary = {
 };
 
 const MAX_LIVE_WAIT_MIN = 90;
+const MAX_RUNTIME_WAIT_MIN = 30;
 const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 type CachedRouteValue<T> = {
@@ -1136,6 +1137,14 @@ export function FastTrackApp() {
                           key={legDetail.leg.id}
                           className="rounded-[1rem] border border-[var(--border-soft)] bg-white px-3 py-2.5"
                         >
+                          {(() => {
+                            const relevantDepartures = getRelevantDeparturesForLeg(
+                              legDetail.transitLeg,
+                              legDetail.arrivalAtLegMin,
+                            );
+
+                            return (
+                              <>
                           {legDetail.transitLeg.lines.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
                               {legDetail.transitLeg.lines.map((line) => (
@@ -1158,7 +1167,7 @@ export function FastTrackApp() {
                               icon={<TrainFront className="size-3.5" />}
                               label={index === 0 ? "Wait to board" : "Wait after transfer"}
                               value={
-                                hasKnownDeparture(legDetail.transitLeg)
+                                legDetail.hasPlausibleWait
                                   ? formatCompactMinutes(legDetail.waitMin)
                                   : legDetail.transitLeg.departureInMin !== undefined
                                     ? "Later"
@@ -1171,11 +1180,11 @@ export function FastTrackApp() {
                               value={formatCompactMinutes(legDetail.rideMin)}
                             />
                             {legDetail.transitLeg.departureInMin !== undefined &&
-                            !hasUsableLiveDeparture(legDetail.transitLeg) ? (
+                            !legDetail.hasPlausibleWait ? (
                               <StatPill
                                 icon={<Clock3 className="size-3.5" />}
                                 label="Next departs"
-                                value={formatCompactMinutes(legDetail.transitLeg.departureInMin)}
+                                value={formatDepartureValue(legDetail.transitLeg.departureInMin)}
                               />
                             ) : null}
                           </div>
@@ -1191,15 +1200,15 @@ export function FastTrackApp() {
                             <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
                               No scheduled departure is available for this leg right now.
                             </p>
-                          ) : !hasUsableLiveDeparture(legDetail.transitLeg) ? (
+                          ) : !legDetail.hasPlausibleWait ? (
                             <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
                               No near-term departures for this leg right now.
                             </p>
                           ) : null}
 
-                          {legDetail.transitLeg.departures.length > 0 ? (
+                          {relevantDepartures.length > 0 ? (
                             <div className="mt-2 flex flex-wrap gap-2">
-                              {legDetail.transitLeg.departures.slice(0, 3).map((departure) => (
+                              {relevantDepartures.slice(0, 3).map((departure) => (
                                 <div
                                   key={departure.tripId}
                                   className="inline-flex items-center gap-2 rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1 text-[11px] text-[var(--text-muted)]"
@@ -1208,7 +1217,7 @@ export function FastTrackApp() {
                                     routeId={departure.routeId}
                                     lines={legDetail.transitLeg.lines}
                                   />
-                                  <span>in {formatCompactMinutes(departure.departureInMin)}</span>
+                                  <span>in {formatDepartureValue(departure.departureInMin)}</span>
                                 </div>
                               ))}
                             </div>
@@ -1236,6 +1245,9 @@ export function FastTrackApp() {
                               </p>
                             </div>
                           ) : null}
+                              </>
+                            );
+                          })()}
                         </div>
                       ))}
                       </div>
@@ -1821,6 +1833,10 @@ function formatCompactMinutes(value: number) {
   return `${hours}h ${minutes}m`;
 }
 
+function formatDepartureValue(value: number) {
+  return value <= MAX_LIVE_WAIT_MIN ? formatCompactMinutes(value) : "Later";
+}
+
 function hasUsableLiveDeparture(
   transitLeg: PlannerRouteIntel["transitLegs"][number] | null | undefined,
 ) {
@@ -1835,6 +1851,20 @@ function hasKnownDeparture(
   transitLeg: PlannerRouteIntel["transitLegs"][number] | null | undefined,
 ) {
   return transitLeg?.status === "ok" && transitLeg.departureInMin !== undefined;
+}
+
+function getPlausibleTransitWaitMin(
+  transitLeg: PlannerRouteIntel["transitLegs"][number] | null | undefined,
+  elapsedMin: number,
+) {
+  const departureInMin = transitLeg?.departureInMin;
+
+  if (!hasKnownDeparture(transitLeg) || departureInMin === undefined) {
+    return undefined;
+  }
+
+  const waitMin = Math.max(0, departureInMin - elapsedMin);
+  return waitMin <= MAX_RUNTIME_WAIT_MIN ? waitMin : undefined;
 }
 
 function getTransitLegDuration(
@@ -1871,15 +1901,19 @@ function buildRouteRuntimeSummary(
     ]),
   );
   let elapsedMin = 0;
+  let fellBackToPlannedTiming = false;
 
   for (const leg of route.legs) {
     const duration = legDurations[leg.id] ?? leg.durationMin;
 
     if (leg.mode === "transit") {
       const transitLeg = transitIntelByLegId.get(leg.id);
+      const waitMin = getPlausibleTransitWaitMin(transitLeg, elapsedMin);
 
-      if (hasKnownDeparture(transitLeg)) {
-        elapsedMin = Math.max(elapsedMin, transitLeg?.departureInMin ?? elapsedMin);
+      if (waitMin !== undefined) {
+        elapsedMin += waitMin;
+      } else if (hasKnownDeparture(transitLeg)) {
+        fellBackToPlannedTiming = true;
       }
     }
 
@@ -1887,7 +1921,9 @@ function buildRouteRuntimeSummary(
   }
 
   return {
-    totalMin: elapsedMin,
+    totalMin: fellBackToPlannedTiming
+      ? Math.max(elapsedMin, route.metrics.totalMin)
+      : elapsedMin,
     legDurations,
     transitLegs,
     surfaceLegGeometries,
@@ -1908,8 +1944,10 @@ function buildTransitLegRuntimeDetails(
   const details: Array<{
     leg: RouteLeg;
     transitLeg: PlannerRouteIntel["transitLegs"][number];
+    arrivalAtLegMin: number;
     waitMin: number;
     rideMin: number;
+    hasPlausibleWait: boolean;
   }> = [];
   let elapsedMin = 0;
 
@@ -1928,23 +1966,35 @@ function buildTransitLegRuntimeDetails(
       continue;
     }
 
+    const arrivalAtLegMin = elapsedMin;
+    const plausibleWaitMin = getPlausibleTransitWaitMin(transitLeg, elapsedMin);
     const boardAtMin =
-      hasKnownDeparture(transitLeg) && transitLeg.departureInMin !== undefined
-        ? Math.max(elapsedMin, transitLeg.departureInMin)
-        : elapsedMin;
-    const waitMin = Math.max(0, boardAtMin - elapsedMin);
+      plausibleWaitMin !== undefined ? elapsedMin + plausibleWaitMin : elapsedMin;
+    const waitMin = plausibleWaitMin ?? 0;
 
     details.push({
       leg,
       transitLeg,
+      arrivalAtLegMin,
       waitMin,
       rideMin: duration,
+      hasPlausibleWait: plausibleWaitMin !== undefined,
     });
 
     elapsedMin = boardAtMin + duration;
   }
 
   return details;
+}
+
+function getRelevantDeparturesForLeg(
+  transitLeg: PlannerRouteIntel["transitLegs"][number],
+  arrivalAtLegMin: number,
+) {
+  return transitLeg.departures.filter((departure) => {
+    const waitMin = Math.max(0, departure.departureInMin - arrivalAtLegMin);
+    return waitMin <= MAX_RUNTIME_WAIT_MIN;
+  });
 }
 
 function getRouteTimeSaved(
